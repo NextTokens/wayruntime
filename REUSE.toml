@@ -1,0 +1,39 @@
+version = 1
+
+[[annotations]]
+path = [
+  ".gitattributes",
+  ".gitignore",
+  "COMMERCIAL-LICENSING.md",
+  "CONTRIBUTING.md",
+  "LICENSING.md",
+  "Makefile",
+  "NOTICE",
+  "README.md",
+  "THIRD-PARTY-NOTICES.md",
+  "examples/**",
+  "include/**",
+  "test/check_api.c",
+  "test/check_license_metadata.py",
+  "test/realtest.sh",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 WayOS Project"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = [
+  "docs/SECURITY.md",
+  "docs/TESTING.md",
+  "src/**",
+  "test/unit_tests.c",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 WayOS Project"
+SPDX-License-Identifier = "BUSL-1.1"
+
+[[annotations]]
+path = "DCO"
+precedence = "override"
+SPDX-FileCopyrightText = "2004, 2006 The Linux Foundation and its contributors"
+SPDX-License-Identifier = "LicenseRef-DCO-1.1"

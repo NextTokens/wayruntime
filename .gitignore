@@ -1,0 +1,8 @@
+build/
+*.o
+*.exe
+*.gguf
+.env
+*.key
+# local machine walkthrough, not part of the distribution
+TRY-IT.md
