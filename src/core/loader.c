@@ -672,6 +672,8 @@ int wri_model_load_gguf(wr_engine *e, const char *path,
         return WR_ERR_INVAL;
     if (c.p.swa_mode != WR_SWA_ENABLED && c.p.swa_mode != WR_SWA_DISABLED)
         return WR_ERR_INVAL;
+    if (c.p.use_mmap < WR_MMAP_DISABLED)
+        return WR_ERR_INVAL;
 
     int rc = wri_gguf_open(path, &c.g);
     if (rc != WR_OK)
@@ -711,7 +713,10 @@ int wri_model_load_gguf(wr_engine *e, const char *path,
     if (rc != WR_OK)
         goto fail;
 
-    if (c.p.use_mmap) {
+    /* Zero-initialized parameters deliberately prefer mmap.  Positive
+     * values retain the pre-tristate "nonzero enables mmap" behavior;
+     * WR_MMAP_DISABLED is the sole explicit streaming opt-out. */
+    if (c.p.use_mmap != WR_MMAP_DISABLED) {
         int mrc = wri_gguf_map_data(c.g);
         if (mrc == WR_OK)
             c.use_map = 1;

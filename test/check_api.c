@@ -33,6 +33,7 @@ unsigned long long wr_api_surface(void)
         (wr_genfn)wr_engine_create,
         (wr_genfn)wr_engine_destroy,
         (wr_genfn)wr_engine_simd_variant,
+        (wr_genfn)wr_engine_thread_count,
         (wr_genfn)wr_engine_set_simd,
         (wr_genfn)wr_engine_counters,
         (wr_genfn)wr_model_load,
@@ -75,6 +76,9 @@ _Static_assert(WR_OK == 0, "WR_OK must be 0");
 _Static_assert(WR_ERR_CTX_FULL < 0, "errors are negative");
 _Static_assert(WR_COUNTER_COUNT == 12, "counters ABI is 12 slots");
 _Static_assert(WR_BATCH_MAX == 16, "batch cap is 16");
+_Static_assert(WR_MMAP_DISABLED == -1 && WR_MMAP_AUTO == 0 &&
+               WR_MMAP_ENABLED == 1,
+               "mmap policy ids are stable ABI");
 _Static_assert(WR_SIMD_SCALAR == 0 && WR_SIMD_AVX2 == 1 &&
                WR_SIMD_AVX512 == 2 && WR_SIMD_NEON == 3,
                "SIMD variant ids are stable ABI");

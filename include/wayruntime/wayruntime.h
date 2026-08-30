@@ -188,6 +188,11 @@ void wr_engine_destroy(wr_engine *e);
 /* Currently bound matmul SIMD variant (WR_SIMD_*). */
 int wr_engine_simd_variant(const wr_engine *e);
 
+/* Resolved worker count after the online-CPU default and compiled cap.
+ * `e` must be a live engine.  Returns a positive count, WR_ERR_INVAL when
+ * `e` is NULL, or WR_ERR_STATE when it is not the current engine. */
+int wr_engine_thread_count(const wr_engine *e);
+
 /* Re-select SIMD kernels at runtime (atomic republish; safe while sessions
  * are decoding on other threads — in-flight ops finish on the old variant).
  * Returns the variant that actually bound (WR_SIMD_*), or a negative
@@ -239,6 +244,18 @@ enum {
                            * (origin-parity mode used by the golden tests) */
 };
 
+/* GGUF file-mapping policy.  AUTO and ENABLED both prefer a read-only
+ * mapping and fall back to streamed reads if the host cannot create one;
+ * ENABLED preserves the historic explicit `use_mmap = 1` spelling. Legacy
+ * positive values still enable mapping, but new code should use these names.
+ * This tri-state replaces the former generic "nonzero enables" contract;
+ * negative values now mean disabled (-1) or invalid (below -1). */
+enum {
+    WR_MMAP_DISABLED = -1, /* always stream/copy weight bytes */
+    WR_MMAP_AUTO     = 0,  /* prefer mmap (the zero-init default) */
+    WR_MMAP_ENABLED  = 1   /* explicitly prefer mmap */
+};
+
 /* Model load parameters.  Zero-initialize; zero fields mean "default". */
 typedef struct wr_model_params {
     uint32_t max_context;   /* upper bound for sessions on this model.
@@ -247,16 +264,19 @@ typedef struct wr_model_params {
                              * cap fail with WR_ERR_LIMIT — never clamped. */
     int32_t  keep_quantized;/* WR_QUANT_* (0 = WR_QUANT_AUTO) */
     int32_t  swa_mode;      /* WR_SWA_* (0 = WR_SWA_ENABLED) */
-    int32_t  use_mmap;      /* nonzero: map the GGUF file and reference
-                             * kept-quantized weight bytes in place instead
-                             * of streaming them into the arena */
+    int32_t  use_mmap;      /* WR_MMAP_* (0 = WR_MMAP_AUTO).  AUTO prefers
+                             * a read-only mapping and safely falls back to
+                             * streaming; DISABLED is the explicit opt-out. */
 } wr_model_params;
 
 /* Load a GGUF model.  Validates the file (version 2/3 only, tensor bounds
  * against the real file size, power-of-2 alignment), detects the
- * architecture, streams/maps weights, and commits the weight set.
- * `params` may be NULL for defaults.
- * Errors: WR_ERR_IO, WR_ERR_FORMAT (malformed file), WR_ERR_UNSUPPORTED
+ * architecture, streams/maps weights, and commits the weight set.  The
+ * default prefers a read-only file mapping and falls back to streaming when
+ * mapping is unavailable.  A mapped backing file must not be modified or
+ * truncated before wr_model_free.  `params` may be NULL for defaults.
+ * Errors: WR_ERR_INVAL (bad arguments/policy), WR_ERR_IO,
+ * WR_ERR_FORMAT (malformed file), WR_ERR_UNSUPPORTED
  * (unknown arch, or a REQUIRED tensor in a dtype the compute path lacks —
  * the log names the tensor and type), WR_ERR_LIMIT, WR_ERR_NOMEM. */
 wr_status wr_model_load(wr_engine *e, const char *gguf_path,
@@ -298,10 +318,11 @@ wr_status wr_model_get_info(const wr_model *m, wr_model_info *out);
  * Tokenizer
  * -------------------------------------------------------------------------- */
 
-/* Build a tokenizer from the model's GGUF vocab/merges metadata.  The
- * tokenizer keeps its own copy of the vocab: it stays valid until
- * wr_tokenizer_free, independent of session activity, but must be freed
- * before its model. */
+/* Build a tokenizer from the model's GGUF vocab/merges metadata.  A model
+ * loaded through the streamed path may reopen its GGUF here, so that path
+ * must remain stable until construction completes.  The tokenizer keeps
+ * its own copy of the vocab: it stays valid until wr_tokenizer_free,
+ * independent of session activity, but must be freed before its model. */
 wr_status wr_tokenizer_from_model(const wr_model *m, wr_tokenizer **out);
 
 void wr_tokenizer_free(wr_tokenizer *t);

@@ -14,6 +14,7 @@ path = [
   "examples/**",
   "include/**",
   "test/check_api.c",
+  "test/benchmark.sh",
   "test/check_license_metadata.py",
   "test/realtest.sh",
 ]

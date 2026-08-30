@@ -263,10 +263,10 @@ int wri_simd_softmax_variant(void);
  * A must be F32 (activations); B may be F32/F16/BF16/INT8/INT4 or any
  * quantized dtype (kept-quantized fast paths: Q8_0/Q4_K/Q6_K decode one
  * weight row at a time).  Parallelization contract:
- *   - quantized/GGML weights: N-split — each output COLUMN's complete
- *     k-reduction executes inside one pool part (bit-exact for any
- *     thread count);
- *   - F32 × F32: M-split over disjoint row blocks, threshold
+ *   - quantized GGML weights, plus F32 GGML weights when M == 1: N-split
+ *     — each output COLUMN's complete k-reduction executes inside one pool
+ *     part (bit-exact for any thread count);
+ *   - other F32 × F32 shapes: M-split over disjoint row blocks, threshold
  *     WR_PARALLEL_THRESHOLD.
  * Falling off a fast path (K > WR_QMM_K_MAX, odd shapes) bumps
  * WR_CTR_MATMUL_PERELEM and computes per-element — slower, never wrong. */
@@ -538,6 +538,7 @@ int wri_self_test_flash_attn(void);
 int wri_self_test_fused(void);
 int wri_self_test_ops(void);
 int wri_self_test_qmm_bit_equality(void);  /* 200-rep re-dispatch equality */
+int wri_self_test_f32_ggml_nsplit(void);   /* F32 head N-split bit-equal   */
 int wri_self_test_llm_step(void);          /* tiny-model decode fixture    */
 int wri_self_test_batch_step(void);        /* batched == serial bit-exact  */
 

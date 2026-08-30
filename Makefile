@@ -7,6 +7,7 @@
 #   make unit            build + run the unit tests
 #   make test            license-check + check-api + unit + integration
 #   make realtest MODEL_GGUF=path/to/model.gguf   end-to-end on a real model
+#   make benchmark MODEL_GGUF=path/to/model.gguf  POSIX-host thread sweep
 #   make MATH_APPROX=0   build the libm-backed math path (see mathx.h)
 #   make clean
 
@@ -14,8 +15,10 @@ VERSION := 0.1.0
 
 # Toolchains are pinned: gcc (POSIX) and x86_64-w64-mingw32-gcc (Windows).
 # The kernels use GCC vector extensions, per-function target attributes
-# and __atomic builtins; MSVC is out of scope by design.
-CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Wshadow -Wvla -g
+# and __atomic builtins; MSVC is out of scope by design.  -O3 is intentional:
+# the block-quant row decoders are on every token's hot path and benefit
+# materially from the additional inlining and loop optimization.
+CFLAGS ?= -std=c11 -O3 -Wall -Wextra -Wshadow -Wvla -g
 CFLAGS += -Iinclude -Isrc
 
 MATH_APPROX ?= 1
@@ -56,11 +59,11 @@ $(LIB): $(LIB_OBJS) Makefile
 	$(RM) $@
 	$(AR) rcs $@ $(LIB_OBJS)
 
-$(BUILDDIR)/%.o: src/%.c
+$(BUILDDIR)/%.o: src/%.c Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILDDIR)/test/%.o: test/%.c
+$(BUILDDIR)/test/%.o: test/%.c Makefile
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -70,7 +73,7 @@ $(BUILDDIR)/wayrt$(EXE): $(BUILDDIR)/cli/wayrt.o $(LIB)
 $(BUILDDIR)/wayrt_tests$(EXE): $(BUILDDIR)/test/unit_tests.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ $(BUILDDIR)/test/unit_tests.o $(LIB) $(LIBS)
 
-.PHONY: all unit test realtest check-api license-check integration \
+.PHONY: all unit test realtest benchmark check-api license-check integration \
         realtest-diff usecase clean
 
 unit: $(BUILDDIR)/wayrt_tests$(EXE)
@@ -122,6 +125,27 @@ realtest-diff: all
 MODEL_GGUF ?=
 realtest: all
 	bash test/realtest.sh $(BUILDDIR) "$(MODEL_GGUF)"
+
+# Local performance evidence, deliberately separate from the correctness
+# gates.  Values are explicit and machine-independent; callers must provide
+# the model and may opt into a CPU-only llama.cpp comparison by setting the
+# path to its llama-bench executable.
+BENCH_THREADS ?= 1,2,4
+BENCH_TOKENS ?= 32
+BENCH_REPETITIONS ?= 3
+BENCH_WARMUPS ?= 1
+LLAMA_BENCH ?=
+ifdef WIN
+benchmark:
+	@echo "benchmark: WIN=1 cross-builds binaries that cannot run on the POSIX host" >&2
+	@exit 2
+else
+benchmark: all
+	@BENCH_THREADS="$(BENCH_THREADS)" BENCH_TOKENS="$(BENCH_TOKENS)" \
+	BENCH_REPETITIONS="$(BENCH_REPETITIONS)" BENCH_WARMUPS="$(BENCH_WARMUPS)" \
+	LLAMA_BENCH="$(LLAMA_BENCH)" \
+	bash test/benchmark.sh $(BUILDDIR) "$(MODEL_GGUF)"
+endif
 
 clean:
 	rm -rf build

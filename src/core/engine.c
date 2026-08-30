@@ -201,6 +201,15 @@ int wr_engine_simd_variant(const wr_engine *e)
     return wri_simd_matmul_variant();
 }
 
+int wr_engine_thread_count(const wr_engine *e)
+{
+    if (e == NULL)
+        return WR_ERR_INVAL;
+    if (e != wri_g_engine)
+        return WR_ERR_STATE;
+    return (int)e->cfg.n_threads;
+}
+
 int wr_engine_set_simd(wr_engine *e, int force_scalar, int prefer_avx2)
 {
     if (e == NULL)

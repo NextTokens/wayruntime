@@ -81,6 +81,11 @@ Windows: `make WIN=1` cross-compiles `build/win/wayrt.exe`
 (mingw-w64). Same commands, same output — greedy generation is
 byte-identical to the Linux build.
 
+Model weights use a read-only file mapping by default, reducing weight
+copies and startup memory. If mapping is unavailable the loader falls back
+to streamed reads automatically. Use the global `--no-mmap` flag when an
+environment requires copied weight storage.
+
 ## Using the library
 
 Everything is behind one header, `include/wayruntime/wayruntime.h`
@@ -117,6 +122,10 @@ against the built library. Lower-level control (prefill/step loops,
 raw logits, batched stepping, token masks) is the same header; the
 `wr_generate` facade is just the short path.
 
+Passing `NULL` model parameters (as above) prefers mmap with a safe streamed
+fallback. To opt out explicitly, zero-initialize `wr_model_params`, set
+`use_mmap = WR_MMAP_DISABLED`, and pass its address to `wr_model_load`.
+
 ## Status — what works, what doesn't
 
 Works today, and is covered by layered tests (unit + golden numeric
@@ -127,8 +136,8 @@ what it proves):
 
 - zero-warning C11 build on gcc and mingw-w64
   (`-Wall -Wextra -Wshadow -Wvla`)
-- 55/55 unit checks, including 9 golden numeric self-tests, plus a
-  69-check integration battery (hostile-GGUF refusals included)
+- 57/57 unit checks, including 10 golden numeric self-tests, plus a
+  71-check integration battery (hostile-GGUF refusals included)
 - greedy decode verified 20/20 teacher-forced argmax agreement with
   llama.cpp on the same GGUF (Qwen3-0.6B)
 - tokenization verified against llama.cpp's tokenizer on the same

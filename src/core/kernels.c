@@ -12,7 +12,7 @@
  *      row-major and transposed-weight ("GGML dot") flavors
  *   3. softmax kernels (scalar + vectorized exp)
  *   4. SIMD dispatch: atomic publish, acquire snapshots, counters
- *   5. worker-pool plumbing (M-split for F32, N-split for quantized)
+ *   5. worker-pool plumbing (M/N-split for F32, N-split for quantized)
  *   6. the wri_op_* implementations
  *   7. golden self-tests (driven by test/unit_tests.c)
  *
@@ -764,6 +764,54 @@ static void matmul_f32_run(wri_matmul_fn kernel, const float *a,
     wr_pool_run(pool, mm_split_part, &job, workers);
 }
 
+/* ---- N-split (F32 GGML weights, decode M == 1) -----------------------
+ * A one-token projection has no M rows to distribute, but a large GGML
+ * weight (notably a dequantized tied LM head) has many independent output
+ * columns.  Split those contiguous W[out][in] rows across the pool.  Each
+ * complete K-dot still runs through the exact same snapshotted kernel, so
+ * its reduction order and result bits are identical to the serial call.
+ *
+ * This specialization is deliberately M == 1.  For M > 1, a sub-call's
+ * compact output stride would differ from the parent C stride; the normal
+ * M-split above already handles large-M work without that complication. */
+
+typedef struct {
+    wri_matmul_fn kernel;
+    const float  *a, *b;
+    float        *c;
+    uint32_t      K, N;
+} mm_ggml_n_job;
+
+static void mm_ggml_n_part(void *arg, uint32_t part, uint32_t n_parts)
+{
+    const mm_ggml_n_job *j = (const mm_ggml_n_job *)arg;
+    uint32_t base  = j->N / n_parts;
+    uint32_t rem   = j->N % n_parts;
+    uint32_t start = part * base + (part < rem ? part : rem);
+    uint32_t cnt   = base + (part < rem ? 1u : 0u);
+    if (cnt == 0)
+        return;
+    j->kernel(j->a, j->b + (size_t)start * j->K, j->c + start,
+              1, j->K, cnt);
+}
+
+static void matmul_f32_ggml_run(wri_matmul_fn kernel, const float *a,
+                                const float *b, float *c,
+                                uint32_t M, uint32_t K, uint32_t N)
+{
+    wr_pool *pool = engine_pool();
+    uint32_t workers = pool ? wr_pool_size(pool) : 1;
+    if (M != 1 || N < WR_PARALLEL_THRESHOLD || workers <= 1) {
+        matmul_f32_run(kernel, a, b, c, M, K, N);
+        return;
+    }
+    if (workers > N)
+        workers = N;
+    mm_ggml_n_job job = { kernel, a, b, c, K, N };
+    WRI_CTR_ADD(WR_CTR_MATMUL_PAR_N, 1);
+    wr_pool_run(pool, mm_ggml_n_part, &job, workers);
+}
+
 /* ---- N-split (kept-quantized GGML weights) ----------------------------
  * Decode one weight row (output column j) into a K-float scratch via
  * the quant.h row decoder, run the GGML dot kernel with N=1 across all
@@ -959,8 +1007,8 @@ int wri_op_matmul(const wr_tensor *A, const wr_tensor *B, wr_tensor *C)
             /* Transposed-B is the ideal dot-product SIMD case — both
              * rows stream contiguously in k. */
             WRI_CTR_ADD(WR_CTR_MATMUL_GGML_SIMD, 1);
-            matmul_f32_run(matmul_ggml_kernel_snapshot(),
-                           cf32p(A), cf32p(B), f32p(C), M, K, N);
+            matmul_f32_ggml_run(matmul_ggml_kernel_snapshot(),
+                                cf32p(A), cf32p(B), f32p(C), M, K, N);
             return WR_OK;
         }
         matmul_f32_run(matmul_kernel_snapshot(),
@@ -2365,4 +2413,62 @@ int wri_self_test_qmm_bit_equality(void)
 
     free(wq);
     return 0;
+}
+
+int wri_self_test_f32_ggml_nsplit(void)
+{
+    /* The dimensions cross both the pool threshold and SIMD tail paths;
+     * N is intentionally not a multiple of a typical worker count. */
+    enum { K = 259, N = WR_PARALLEL_THRESHOLD + 13 };
+    float *a = (float *)malloc((size_t)K * sizeof(float));
+    float *b = (float *)malloc((size_t)N * K * sizeof(float));
+    float *serial = (float *)malloc((size_t)N * sizeof(float));
+    float *split  = (float *)malloc((size_t)N * sizeof(float));
+    if (!a || !b || !serial || !split) {
+        free(a); free(b); free(serial); free(split);
+        wri_log_msg(0, "self-test f32 nsplit: fixture alloc failed");
+        return -1;
+    }
+
+    for (uint32_t k = 0; k < K; k++)
+        a[k] = (float)((k * 17u) % 41u) * 0.025f - 0.5f;
+    for (uint32_t j = 0; j < N; j++)
+        for (uint32_t k = 0; k < K; k++)
+            b[(size_t)j * K + k] =
+                (float)(((j + 3u) * 29u + k * 11u) % 67u) * 0.015f - 0.4f;
+
+    wri_matmul_fn kernel = matmul_ggml_kernel_snapshot();
+    kernel(a, b, serial, 1, K, N);
+
+    wr_tensor A, B, C;
+    uint32_t ash[2] = { 1, K };
+    uint32_t bsh[2] = { K, N };
+    uint32_t csh[2] = { 1, N };
+    mk_tensor(&A, WR_DTYPE_F32, 2, ash, a);
+    mk_tensor(&B, WR_DTYPE_F32, 2, bsh, b);
+    mk_tensor(&C, WR_DTYPE_F32, 2, csh, split);
+    B.flags |= WR_TENSOR_GGML_WEIGHT;
+    memset(split, 0xA5, (size_t)N * sizeof(float));
+
+    uint64_t before = __atomic_load_n(
+        &wri_g_counters[WR_CTR_MATMUL_PAR_N], __ATOMIC_RELAXED);
+    if (wri_op_matmul(&A, &B, &C) != WR_OK) {
+        free(a); free(b); free(serial); free(split);
+        wri_log_msg(0, "self-test f32 nsplit: op failed");
+        return -1;
+    }
+    uint64_t after = __atomic_load_n(
+        &wri_g_counters[WR_CTR_MATMUL_PAR_N], __ATOMIC_RELAXED);
+
+    int fail = memcmp(serial, split, (size_t)N * sizeof(float)) != 0;
+    wr_pool *pool = engine_pool();
+    if (pool && wr_pool_size(pool) > 1 && after != before + 1u)
+        fail = 1;  /* counter witness: the parallel branch really ran */
+    if (serial[0] == 0.0f && serial[N / 2] == 0.0f && serial[N - 1] == 0.0f)
+        fail = 1;  /* fixture witness: equality cannot pass on zero output */
+
+    if (fail)
+        wri_log_msg(0, "self-test f32 nsplit: split is not bit-exact/witnessed");
+    free(a); free(b); free(serial); free(split);
+    return fail ? -1 : 0;
 }

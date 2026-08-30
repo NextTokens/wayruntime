@@ -11,9 +11,10 @@
  *   2. PORTED GOLDEN SELF-TESTS: the origin engine's numeric self-tests
  *      (quant/dequant, matmul SIMD-vs-scalar oracle, softmax, flash
  *      attention, fused ops, the 200-rep quantized-matmul re-dispatch
- *      bit-equality, the tiny-model decode fixture, batched-vs-serial
- *      step equality) arrive with their modules and are wired into
- *      run_all() via the wri_self_test_* entry points in internal.h.
+ *      bit-equality, F32-head N-split equality, the tiny-model decode
+ *      fixture, batched-vs-serial step equality) arrive with their
+ *      modules and are wired into run_all() via the wri_self_test_*
+ *      entry points in internal.h.
  *
  * Exit code 0 = all pass.  Output: one line per test, TAP-ish.
  */
@@ -137,6 +138,7 @@ static void test_ported_goldens(void)
     CHECK("golden.fused",          wri_self_test_fused() == 0);
     CHECK("golden.ops",            wri_self_test_ops() == 0);
     CHECK("golden.qmm_bit_equal",  wri_self_test_qmm_bit_equality() == 0);
+    CHECK("golden.f32_ggml_nsplit", wri_self_test_f32_ggml_nsplit() == 0);
     CHECK("golden.llm_step",       wri_self_test_llm_step() == 0);
     CHECK("golden.batch_step",     wri_self_test_batch_step() == 0);
 }
@@ -147,6 +149,7 @@ int main(void)
     wr_engine *e = NULL;
     wr_status st = wr_engine_create(NULL, &e);
     CHECK("engine.create", st == WR_OK && e != NULL);
+    CHECK("engine.threads", wr_engine_thread_count(e) > 0);
 
     test_dtype_values();
     test_block_constants();

@@ -50,6 +50,15 @@ This document says exactly what that means — and what it does not.
   mean gigabytes and minutes of CPU. Cap `max_context` and check
   `wr_model_get_info` before committing resources on behalf of
   untrusted users.
+- **A mapped model file must remain immutable while the model is live.**
+  Model loads prefer a read-only mapping after container validation, so
+  modifying or truncating the backing file before `wr_model_free` violates
+  the caller contract and can fault on operating systems with mmap-style
+  semantics. `WR_MMAP_DISABLED` (or CLI `--no-mmap`) copies the weights and
+  avoids that mapped-weight hazard, but the GGUF path must still remain
+  stable until every needed tokenizer has been constructed: streamed models
+  reopen it lazily for tokenizer metadata. Failure to create a mapping
+  already falls back to the same streamed path.
 - **The library trusts its caller.** API contract violations
   (freeing a parent before its children, driving one session from
   two threads) are caught and refused where cheap, but the caller is

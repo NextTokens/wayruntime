@@ -76,12 +76,14 @@ enum {
 typedef struct {
     uint32_t threads; /* 0 = library default (one per online CPU) */
     int      simd;    /* SIMD_* request from --simd                */
+    int      mmap_mode; /* WR_MMAP_*; 0 = library default          */
 } cli_opts;
 
 static void usage(FILE *out)
 {
     fputs(
-"usage: wayrt [--threads N] [--simd auto|scalar|avx2|avx512] <command> ...\n"
+"usage: wayrt [--threads N] [--simd auto|scalar|avx2|avx512] [--no-mmap]\n"
+"             <command> ...\n"
 "\n"
 "commands:\n"
 "  verify <model.gguf>\n"
@@ -105,6 +107,8 @@ static void usage(FILE *out)
 "  --threads N   worker threads (0 = one per online CPU)\n"
 "  --simd MODE   kernel selection; an explicit avx2/avx512 request the\n"
 "                host cannot bind is an error, never a silent fallback\n"
+"  --no-mmap     stream/copy model weights instead of the default\n"
+"                read-only file mapping (mapping already falls back safely)\n"
 "\n"
 "exit codes: 0 ok, 1 usage, 2 model load error, 3 runtime error\n",
         out);
@@ -274,6 +278,10 @@ static int match_global(cli_opts *o, int argc, char **argv, int *i)
         }
         return 1;
     }
+    if (strcmp(argv[*i], "--no-mmap") == 0) {
+        o->mmap_mode = WR_MMAP_DISABLED;
+        return 1;
+    }
     return 0;
 }
 
@@ -345,6 +353,19 @@ static wr_engine *make_engine(const cli_opts *o)
     return e;
 }
 
+/* Keep the default CLI path on the public API's NULL-params contract while
+ * passing a parameter block only for an explicit mapping policy. */
+static wr_status load_model(wr_engine *e, const cli_opts *o,
+                            const char *path, wr_model **out)
+{
+    wr_model_params p = {0};
+
+    if (o->mmap_mode == WR_MMAP_AUTO)
+        return wr_model_load(e, path, NULL, out);
+    p.use_mmap = o->mmap_mode;
+    return wr_model_load(e, path, &p, out);
+}
+
 /* ------------------------------------------------------------------ */
 /* Counters dump (bench)                                              */
 /* ------------------------------------------------------------------ */
@@ -403,7 +424,7 @@ static int cmd_verify(cli_opts *opt, int argc, char **argv)
     if (!engine)
         return WRT_EXIT_RUNTIME;
 
-    st = wr_model_load(engine, path, NULL, &model);
+    st = load_model(engine, opt, path, &model);
     if (st != WR_OK) {
         fail_status("model load", st);
         rc = WRT_EXIT_LOAD;
@@ -590,7 +611,7 @@ static int cmd_generate(cli_opts *opt, int argc, char **argv)
     if (!engine)
         return WRT_EXIT_RUNTIME;
 
-    st = wr_model_load(engine, path, NULL, &model);
+    st = load_model(engine, opt, path, &model);
     if (st != WR_OK) {
         fail_status("model load", st);
         rc = WRT_EXIT_LOAD;
@@ -718,7 +739,7 @@ static int cmd_bench(cli_opts *opt, int argc, char **argv)
     if (!engine)
         return WRT_EXIT_RUNTIME;
 
-    st = wr_model_load(engine, path, NULL, &model);
+    st = load_model(engine, opt, path, &model);
     if (st != WR_OK) {
         fail_status("model load", st);
         rc = WRT_EXIT_LOAD;
@@ -744,8 +765,7 @@ static int cmd_bench(cli_opts *opt, int argc, char **argv)
         uint32_t ids[64];
         uint32_t n_prefill, produced = 0, prev;
         double   t0, prefill_s = 0.0, decode_s;
-        int      n_in, ctx_hit = 0;
-        char     tdesc[16];
+        int      n_in, ctx_hit = 0, resolved_threads;
 
         n_in = wr_tokenize(tok, BENCH_PROMPT, ids, 64);
         if (n_in <= 0) {
@@ -796,18 +816,19 @@ static int cmd_bench(cli_opts *opt, int argc, char **argv)
             goto out;
         }
 
-        if (opt->threads)
-            snprintf(tdesc, sizeof tdesc, "%u", opt->threads);
-        else
-            snprintf(tdesc, sizeof tdesc, "auto");
+        resolved_threads = wr_engine_thread_count(engine);
+        if (resolved_threads < 1) {
+            fail_status("engine thread count", (wr_status)resolved_threads);
+            goto out;
+        }
 
         printf("model:    %s\n", path);
         printf("arch:     %s  quant: %s  layers: %u  hidden: %u  "
                "vocab: %u  ctx: %u\n",
                info.arch, info.quant, info.n_layers, info.hidden_dim,
                info.vocab_size, info.max_context);
-        printf("simd:     %s  threads: %s\n",
-               simd_name(wr_engine_simd_variant(engine)), tdesc);
+        printf("simd:     %s  threads: %d\n",
+               simd_name(wr_engine_simd_variant(engine)), resolved_threads);
         if (n_prefill > 0)
             printf("prefill:  %u tokens  %.2f ms  %.1f tok/s\n",
                    n_prefill, prefill_s * 1e3,
@@ -863,7 +884,7 @@ static int cmd_chat(cli_opts *opt, int argc, char **argv)
     if (!engine)
         return WRT_EXIT_RUNTIME;
 
-    st = wr_model_load(engine, path, NULL, &model);
+    st = load_model(engine, opt, path, &model);
     if (st != WR_OK) {
         fail_status("model load", st);
         rc = WRT_EXIT_LOAD;

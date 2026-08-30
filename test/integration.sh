@@ -92,6 +92,25 @@ for m in "$TINY_Q4K" "$TINY_Q5K" "$TINY_Q6K" "$STORIES"; do
     else ok; fi
 done
 
+step "default model load maps read-only or reports streamed fallback"
+run "$WAYRT" verify "$TINY_Q4K"
+cp "$T/out" "$T/verify-mmap"
+if [ "$RC" -ne 0 ]; then bad "exit $RC"
+elif grep -q 'loader: .* mmap$' "$T/err"; then ok
+elif grep -q 'loader: mapping .* failed .* streaming instead' "$T/err"; then ok
+else bad "loader reported neither mmap success nor streamed fallback"; fi
+
+step "--no-mmap streams weights with identical model metadata"
+run "$WAYRT" verify --no-mmap "$TINY_Q4K"
+if [ "$RC" -ne 0 ]; then bad "exit $RC"
+elif grep -q 'loader: .* mmap$' "$T/err"; then
+    bad "loader still reported mmap"
+elif grep -q 'loader: mapping .* failed' "$T/err"; then
+    bad "loader attempted mmap despite explicit opt-out"
+elif ! cmp -s "$T/verify-mmap" "$T/out"; then
+    bad "streamed load changed verify output"
+else ok; fi
+
 # ------------------------------------------------------------------
 # 2. refusals: wrong architecture, missing file, garbage file
 # ------------------------------------------------------------------
