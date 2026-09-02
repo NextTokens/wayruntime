@@ -585,7 +585,11 @@ static int fill_hparams(load_ctx *c, wr_arch_class cls)
             return WR_ERR_FORMAT;
         }
         m->head_dim_swa       = a->attention_key_length_swa; /* 0 = same  */
-        m->rope_freq_base_swa = a->rope_freq_base_swa;       /* 0 = base  */
+        /* SWA layers rotate at their own base; when the file carries no
+         * value the reference implementations (and the origin engine's
+         * RoPE default) use 10000, NOT the global base. */
+        m->rope_freq_base_swa = (a->rope_freq_base_swa >= 1.0f)
+                                    ? a->rope_freq_base_swa : 10000.0f;
         m->sliding_window     = a->attention_sliding_window;
         m->kv_shared_layers   = a->attention_shared_kv_layers;
         if (m->kv_shared_layers >= m->n_layers) {
@@ -594,6 +598,18 @@ static int fill_hparams(load_ctx *c, wr_arch_class cls)
             return WR_ERR_FORMAT;
         }
         m->pl_emb_dim = a->embedding_length_per_layer_input;
+        /* The per-layer-input table is [vocab, n_layers * pl_emb_dim];
+         * bound the folded width in 64-bit so every later 32-bit product
+         * of the two is exact (the session slices it per layer). */
+        if ((uint64_t)m->pl_emb_dim * (uint64_t)m->n_layers >
+            (uint64_t)WRI_PLE_WIDTH_MAX) {
+            wri_log_msg(0, "loader: per-layer input width %llu exceeds the "
+                    "supported maximum %u (WR_ERR_LIMIT)",
+                    (unsigned long long)m->pl_emb_dim *
+                        (unsigned long long)m->n_layers,
+                    (unsigned)WRI_PLE_WIDTH_MAX);
+            return WR_ERR_LIMIT;
+        }
         m->has_swa    = a->has_swa_pattern ? 1 : 0;
         for (uint32_t l = 0; l < m->n_layers; l++)
             m->swa_pattern[l] = (m->has_swa && a->swa_pattern[l]) ? 1 : 0;

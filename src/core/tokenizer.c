@@ -58,6 +58,18 @@ wr_status wr_tokenizer_from_model(const wr_model *m, wr_tokenizer **out)
         free(t);
         return (wr_status)rc;
     }
+    /* The vocab was re-read from the file the model was loaded from; a
+     * replaced file with more tokens than the model has embedding rows
+     * cannot belong to these weights.  (Fewer is normal: embedding
+     * tables are commonly padded past the token list.) */
+    if (t->bpe.vocab_size > mm->vocab_size) {
+        wri_log_msg(0, "tokenizer: vocab of %u tokens exceeds the model's %u "
+                "embedding rows - file changed since load? (WR_ERR_STATE)",
+                t->bpe.vocab_size, mm->vocab_size);
+        wri_bpe_free(&t->bpe);
+        free(t);
+        return WR_ERR_STATE;
+    }
 
     t->model = mm;
     wr_mutex_lock(mm->lock);

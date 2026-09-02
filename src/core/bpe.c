@@ -1122,7 +1122,7 @@ static size_t piece_expand(const wr_bpe *t, uint32_t id, char *dst)
 int wri_bpe_decode(const wr_bpe *t, const uint32_t *ids, int n_ids,
                    char *out_buf, int max_bytes)
 {
-    if (!t || !ids || !out_buf || n_ids < 0 || max_bytes <= 0)
+    if (!t || (!ids && n_ids > 0) || !out_buf || n_ids < 0 || max_bytes <= 0)
         return WR_ERR_INVAL;
 
     size_t p = 0;

@@ -25,8 +25,6 @@ EXCLUDED_FILES = {
     "LICENSE",
     "REUSE.toml",
     "TRY-IT.md",
-    # Internal porting notes for the initial port; gitignored, not shipped.
-    "docs/PORTING-CONTRACTS.md",
 }
 SPDX_TAG = "SPDX-License-" "Identifier:"
 SPDX_RE = re.compile(
@@ -118,9 +116,19 @@ def main() -> None:
     if dco != dco_license:
         failures.append("DCO and its LicenseRef text differ")
 
+    # LICENSE parameters: the licensor is read from LICENSE itself (never
+    # duplicated here) and must be the same name NOTICE and LICENSING.md
+    # use; the Licensed Work and Change Date lines are pinned.
     license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
-    for required in ("Licensor:             WayOS Project",
-                     "Licensed Work:        The wayruntime 0.1.0 files",
+    licensor = re.search(r"^Licensor:\s+(\S.*?)\s*$", license_text, re.M)
+    if licensor is None:
+        failures.append("LICENSE: no Licensor parameter")
+    else:
+        name = licensor.group(1)
+        for rel in ("NOTICE", "LICENSING.md", "COMMERCIAL-LICENSING.md"):
+            if name not in (ROOT / rel).read_text(encoding="utf-8"):
+                failures.append(f"{rel}: does not name the LICENSE licensor")
+    for required in ("Licensed Work:        The wayruntime 0.1.0 files",
                      "Change Date:          2030-08-30"):
         if required not in license_text:
             failures.append(f"LICENSE: missing {required.strip()!r}")

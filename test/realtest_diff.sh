@@ -20,13 +20,17 @@
 #        WR_DIFF_MODEL  GGUF path; MUST be the same model the server
 #                       serves (default $MODELS_DIR/Qwen3-0.6B-Q4_K_M.gguf)
 #
-# Two comparisons:
+# Three comparisons:
 #   (a) tokenizer corpus: 20 strings through wr_tokenize vs POST
 #       /tokenize; reports the exact-match count, asserts >= threshold.
 #   (b) 20-step teacher-forced argmax agreement: llama.cpp's greedy
 #       continuation of prompt ids 12522,5193,264,882 is replayed
 #       token-by-token through wr_step; each step's argmax is compared
 #       with the reference token; asserts 20/20 by default.
+#   (c) the compiled-in fixture corpus (test/tokenizer_fixtures.h,
+#       plain + parse-special sets) replayed through the SDK harness's
+#       `tokfix` mode; EVERY fixture must match the reference exactly
+#       (no threshold: this is the README's 78/78 claim, re-proven).
 #
 # Exit codes: 0 pass, 1 fail, 2 setup error, 3 SKIP (server down —
 # deliberately distinct from failure).
@@ -184,6 +188,37 @@ for i, text in enumerate(corpus):
         print("        ours: %s" % ours)
         print("        ref:  %s" % ref)
 
+# ---- (c) compiled-in fixture corpus ------------------------------
+
+p = subprocess.run(
+    [sdk, "tokfix", model],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+)
+if p.returncode != 0:
+    print("realtest-diff: tokfix harness failed (exit %d)" % p.returncode)
+    sys.exit(2)
+fix_total = 0
+fix_match = 0
+for line in p.stdout.decode("utf-8").split("\n"):
+    if not line:
+        continue
+    flags, jtext, idstr = line.split("\t", 2)
+    text = json.loads(jtext)
+    ours = [int(x) for x in idstr.split(",")] if idstr else []
+    body = {"content": text}
+    if int(flags) & 1:
+        body["parse_special"] = True
+    ref = post("/tokenize", body)["tokens"]
+    fix_total += 1
+    same = ours == ref
+    fix_match += same
+    if not same:
+        print("fixture %3d  DIFF  %r" % (fix_total, text))
+        print("        ours: %s" % ours)
+        print("        ref:  %s" % ref)
+print("fixtures: %d/%d exact" % (fix_match, fix_total))
+
 # ---- (b) teacher-forced argmax agreement -------------------------
 
 prompt_ids = [12522, 5193, 264, 882]
@@ -232,14 +267,18 @@ if agree is None:
 
 tok_ok = tok_match >= tok_thresh
 tf_ok = agree >= tf_thresh
+fix_ok = fix_total > 0 and fix_match == fix_total
 print(
     "realtest-diff: tokenizer %d/%d exact (threshold %d) %s, "
+    "fixtures %d/%d exact %s, "
     "teacher-forced %d/%d (threshold %d) %s"
     % (
         tok_match, len(corpus), tok_thresh, "OK" if tok_ok else "FAIL",
+        fix_match, fix_total, "OK" if fix_ok else "FAIL",
         agree, n_steps, tf_thresh, "OK" if tf_ok else "FAIL",
     )
 )
-print("realtest-diff: %s" % ("PASS" if tok_ok and tf_ok else "FAIL"))
-sys.exit(0 if tok_ok and tf_ok else 1)
+all_ok = tok_ok and tf_ok and fix_ok
+print("realtest-diff: %s" % ("PASS" if all_ok else "FAIL"))
+sys.exit(0 if all_ok else 1)
 PYEOF

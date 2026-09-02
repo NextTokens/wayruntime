@@ -420,24 +420,30 @@ int wri_model_destroy(wr_model *m)
     if (!m)
         return WR_OK;
 
-    uint32_t srefs, trefs;
+    /* Refcounts and the cached tokenizer are read — and the cache taken
+     * out — under the one lock that guards them (internal.h), so the
+     * check and the act see the same state.  The lazily cached tokenizer
+     * (wr_generate) holds one tokenizer_ref of its own; anything beyond
+     * that is a live caller-owned child. */
+    uint32_t srefs, trefs, cached;
+    wr_tokenizer *cached_tok;
     wr_mutex_lock(m->lock);
     srefs = m->session_refs;
     trefs = m->tokenizer_refs;
+    cached_tok = m->cached_tok;
+    cached = cached_tok ? 1u : 0u;
+    if (srefs == 0 && trefs <= cached)
+        m->cached_tok = NULL;           /* taken: freed below */
     wr_mutex_unlock(m->lock);
 
-    /* The lazily cached tokenizer (wr_generate) holds one tokenizer_ref of
-     * its own; anything beyond that is a live caller-owned child. */
-    uint32_t cached = m->cached_tok ? 1u : 0u;
     if (srefs != 0 || trefs > cached) {
         wri_log_msg(0, "model: destroy refused — %u session(s) and %u "
                 "tokenizer(s) still alive (WR_ERR_BUSY)", srefs, trefs);
         return WR_ERR_BUSY;
     }
 
-    if (m->cached_tok) {
-        wr_tokenizer_free(m->cached_tok);
-        m->cached_tok = NULL;
+    if (cached_tok) {
+        wr_tokenizer_free(cached_tok);
     }
 
     free_all_slots(m);

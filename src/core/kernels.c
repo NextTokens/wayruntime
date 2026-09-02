@@ -702,6 +702,12 @@ int wri_simd_softmax_variant(void)
  * the variant slots are materialized here at snapshot time. */
 uint64_t wri_g_counters[WR_COUNTER_COUNT];
 
+void wri_counters_reset(void)
+{
+    for (int i = 0; i < WR_COUNTER_COUNT; i++)
+        __atomic_store_n(&wri_g_counters[i], (uint64_t)0, __ATOMIC_RELAXED);
+}
+
 void wri_counters_snapshot(uint64_t out[WR_COUNTER_COUNT])
 {
     for (int i = 0; i < WR_COUNTER_COUNT; i++)
@@ -1571,9 +1577,10 @@ void wri_softcap(float *x, uint64_t n, float cap)
 {
     if (!x || cap <= 0.0f)
         return;
-    float inv_cap = 1.0f / cap;
+    /* Divide, never multiply by a reciprocal: 1/cap is inexact and the
+     * origin engine (and the documented formula) divides. */
     for (uint64_t i = 0; i < n; i++)
-        x[i] = cap * wri_tanh(x[i] * inv_cap);
+        x[i] = cap * wri_tanh(x[i] / cap);
 }
 
 /* --------------------------------------------------------------------------
@@ -2277,7 +2284,7 @@ static int ops_test_add_softcap(void)
     float x[3] = { 0.0f, 30.0f, -300.0f };
     float ref[3];
     for (int i = 0; i < 3; i++)
-        ref[i] = 30.0f * wri_tanh(x[i] * (1.0f / 30.0f));
+        ref[i] = 30.0f * wri_tanh(x[i] / 30.0f);
     wri_softcap(x, 3, 30.0f);
     for (int i = 0; i < 3; i++)
         if (x[i] != ref[i]) return -1;

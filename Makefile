@@ -5,7 +5,9 @@
 #   make                 build libwayruntime.a + wayrt (host POSIX, gcc)
 #   make WIN=1           cross-compile Windows binaries (mingw-w64)
 #   make unit            build + run the unit tests
-#   make test            license-check + check-api + unit + integration
+#   make test            license-check + check-api + unit (offline; runs from a clone)
+#   make check           test + integration (needs a small llama-family GGUF,
+#                        WR_TEST_LLAMA=path; see docs/TESTING.md)
 #   make realtest MODEL_GGUF=path/to/model.gguf   end-to-end on a real model
 #   make benchmark MODEL_GGUF=path/to/model.gguf  POSIX-host thread sweep
 #   make MATH_APPROX=0   build the libm-backed math path (see mathx.h)
@@ -20,6 +22,9 @@ VERSION := 0.1.0
 # materially from the additional inlining and loop optimization.
 CFLAGS ?= -std=c11 -O3 -Wall -Wextra -Wshadow -Wvla -g
 CFLAGS += -Iinclude -Isrc
+# Header dependency tracking: every object records the headers it
+# included, so a header edit rebuilds exactly the objects that use it.
+CFLAGS += -MMD -MP
 
 MATH_APPROX ?= 1
 CFLAGS += -DWR_MATH_APPROX=$(MATH_APPROX)
@@ -32,7 +37,9 @@ CORE_SRC := src/core/engine.c src/core/kernels.c src/core/mathx.c \
 CLI_SRC  := src/cli/wayrt.c
 TEST_SRC := test/unit_tests.c
 
-ifdef WIN
+# WIN=1 selects the Windows cross build; any other value (or unset) is the
+# host POSIX build (`ifeq`, not `ifdef`: WIN=0 must mean off).
+ifeq ($(WIN),1)
 CC       := x86_64-w64-mingw32-gcc
 AR       := x86_64-w64-mingw32-ar
 PLAT_SRC := src/platform/win/os_win.c src/platform/win/cpu_features.c
@@ -40,8 +47,14 @@ LIBS     :=
 EXE      := .exe
 BUILDDIR := build/win
 else
-CC       ?= gcc
-AR       ?= ar
+# GNU make predefines CC=cc, so `?=` would never pin gcc; only an explicit
+# user override (command line / environment) is honored.
+ifeq ($(origin CC),default)
+CC       := gcc
+endif
+ifeq ($(origin AR),default)
+AR       := ar
+endif
 PLAT_SRC := src/platform/posix/os_posix.c src/platform/posix/cpu_features.c
 LIBS     := -lpthread -lm
 EXE      :=
@@ -73,8 +86,10 @@ $(BUILDDIR)/wayrt$(EXE): $(BUILDDIR)/cli/wayrt.o $(LIB)
 $(BUILDDIR)/wayrt_tests$(EXE): $(BUILDDIR)/test/unit_tests.o $(LIB)
 	$(CC) $(CFLAGS) -o $@ $(BUILDDIR)/test/unit_tests.o $(LIB) $(LIBS)
 
-.PHONY: all unit test realtest benchmark check-api license-check integration \
-        realtest-diff usecase clean
+-include $(LIB_OBJS:.o=.d) $(BUILDDIR)/cli/wayrt.d $(BUILDDIR)/test/unit_tests.d
+
+.PHONY: all unit test check realtest benchmark check-api license-check \
+        integration realtest-diff usecase clean
 
 unit: $(BUILDDIR)/wayrt_tests$(EXE)
 	$(BUILDDIR)/wayrt_tests$(EXE)
@@ -91,11 +106,16 @@ check-api:
 license-check:
 	python3 test/check_license_metadata.py
 
-test: license-check check-api unit integration
+test: license-check check-api unit
 
-# CLI + hostile-GGUF + SDK integration suite against the real test
-# models (see test/integration.sh; MODELS_DIR=... overrides the model
-# directory, default ../models next to the repository).
+# Everything `test` runs plus the real-model integration suite.
+check: test integration
+
+# CLI + hostile-GGUF + SDK integration suite against a real model (see
+# test/integration.sh).  WR_TEST_LLAMA=path names the llama-family GGUF
+# it runs on (default ../models/stories15M-q8_0.gguf next to the
+# repository; MODELS_DIR=... moves the directory); WR_TEST_Q4K/Q5K/Q6K
+# name optional K-quant files for the extra load checks.
 integration: all
 	bash test/integration.sh $(BUILDDIR)
 
@@ -135,7 +155,7 @@ BENCH_TOKENS ?= 32
 BENCH_REPETITIONS ?= 3
 BENCH_WARMUPS ?= 1
 LLAMA_BENCH ?=
-ifdef WIN
+ifeq ($(WIN),1)
 benchmark:
 	@echo "benchmark: WIN=1 cross-builds binaries that cannot run on the POSIX host" >&2
 	@exit 2

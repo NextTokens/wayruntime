@@ -587,11 +587,11 @@ wr_status wri_session_step(wr_session *s, uint32_t token, int compute_logits)
         if (st == WR_OK && compute_logits)
             st = lm_head_project(s);
         if (st == WR_OK)
-            s->pos++;
+            __atomic_store_n(&s->pos, s->pos + 1, __ATOMIC_RELEASE);
         else
             wri_session_kv_rollback(s);     /* no partial positions */
     }
-    s->last_status = st;
+    __atomic_store_n(&s->last_status, st, __ATOMIC_RELEASE);
     wr_mutex_unlock(s->lock);
     return st;
 }
@@ -605,19 +605,26 @@ int wri_session_prefill(wr_session *s, const uint32_t *ids, uint32_t n)
     wr_mutex_lock(s->lock);
     wr_status st = WR_OK;
     uint32_t consumed = 0;
-    /* All-or-nothing context check: if the whole prompt cannot fit, the
-     * call consumes NOTHING (never a silent partial prefill). */
+    /* All-or-nothing: if the whole batch cannot fit, or any token fails
+     * mid-stream, the call consumes NOTHING - position and KV cursors are
+     * restored to the entry state (never a silent partial prefill). */
+    const uint32_t pos0 = s->pos;
     if ((uint64_t)s->pos + n > s->max_context) {
         st = WR_ERR_CTX_FULL;
     } else {
         for (uint32_t i = 0; i < n; i++) {
             st = wri_session_decode_body(s, ids[i]);
-            if (st != WR_OK) { wri_session_kv_rollback(s); break; }
-            s->pos++;
+            if (st != WR_OK) {
+                __atomic_store_n(&s->pos, pos0, __ATOMIC_RELEASE);
+                wri_session_kv_rollback(s);
+                consumed = 0;
+                break;
+            }
+            __atomic_store_n(&s->pos, s->pos + 1, __ATOMIC_RELEASE);
             consumed++;
         }
     }
-    s->last_status = st;
+    __atomic_store_n(&s->last_status, st, __ATOMIC_RELEASE);
     wr_mutex_unlock(s->lock);
     return (st == WR_OK) ? (int)consumed : (int)st;
 }
@@ -822,9 +829,12 @@ const float *wr_step(wr_session *s, uint32_t token)
     return (const float *)s->logits.data;
 }
 
+/* The getters are safe from any thread: every writer publishes pos and
+ * last_status with release stores under the session lock, and these
+ * read with acquire loads (max_context is immutable after create). */
 uint32_t wr_session_pos(const wr_session *s)
 {
-    return s ? s->pos : 0;
+    return s ? __atomic_load_n(&s->pos, __ATOMIC_ACQUIRE) : 0;
 }
 
 uint32_t wr_session_max_context(const wr_session *s)
@@ -834,7 +844,8 @@ uint32_t wr_session_max_context(const wr_session *s)
 
 wr_status wr_session_status(const wr_session *s)
 {
-    return s ? s->last_status : WR_ERR_INVAL;
+    return s ? __atomic_load_n(&s->last_status, __ATOMIC_ACQUIRE)
+             : WR_ERR_INVAL;
 }
 
 /* --------------------------------------------------------------------------

@@ -31,8 +31,11 @@
  *               - different sessions of the SAME model may run decode
  *                 concurrently from different threads (model weights are
  *                 immutable after load);
- *               - wr_engine / wr_model query calls are safe from any
- *                 thread; create/destroy calls are not.
+ *               - wr_engine / wr_model query calls, and the wr_session
+ *                 getters (pos / max_context / status), are safe from
+ *                 any thread; create/destroy calls are not, and
+ *                 concurrent wr_engine_set_simd calls are serialized
+ *                 internally.
  *             The library owns an internal worker pool; callers never
  *             see its threads.
  *
@@ -318,11 +321,15 @@ wr_status wr_model_get_info(const wr_model *m, wr_model_info *out);
  * Tokenizer
  * -------------------------------------------------------------------------- */
 
-/* Build a tokenizer from the model's GGUF vocab/merges metadata.  A model
- * loaded through the streamed path may reopen its GGUF here, so that path
- * must remain stable until construction completes.  The tokenizer keeps
- * its own copy of the vocab: it stays valid until wr_tokenizer_free,
- * independent of session activity, but must be freed before its model. */
+/* Build a tokenizer from the model's GGUF vocab/merges metadata.  The
+ * tokenizer keeps its own copy of the vocab: it stays valid until
+ * wr_tokenizer_free, independent of session activity, but must be freed
+ * before its model.
+ *
+ * Unless the model was loaded with use_mmap (whose mapping is reused),
+ * the vocab is re-read from the model's GGUF file at this call: the file
+ * must still be present and unchanged.  A file whose token list no
+ * longer fits the loaded weights is refused with WR_ERR_STATE. */
 wr_status wr_tokenizer_from_model(const wr_model *m, wr_tokenizer **out);
 
 void wr_tokenizer_free(wr_tokenizer *t);
@@ -494,7 +501,10 @@ enum {
                                     * auto-detected chat template (ChatML
                                     * variants, Gemma turn markers) and stop
                                     * on the template's end marker (dropped
-                                    * from the output text) */
+                                    * from the output text).  On Qwen3
+                                    * vocabs the user turn gets " /no_think"
+                                    * appended unless the prompt already
+                                    * contains "/think" or "/no_think". */
     WR_GEN_RAW           = 1 << 1  /* verbatim prompt, no BOS injection */
 };
 
@@ -533,8 +543,10 @@ typedef struct wr_generate_result {
  * detokenize on `s`.  The session's tokenizer is created internally on
  * first use and cached on the model.  On success fills `*out`; on error
  * `out->text` is NULL and nothing needs freeing.  The session retains the
- * conversation in its KV cache, so consecutive wr_generate calls on one
- * session continue the same context. */
+ * conversation in its KV cache - prompt, generated text AND the stop
+ * marker (EOS / template close) - so consecutive wr_generate calls on one
+ * session continue the same context; only a full context prevents the
+ * final token from being retained. */
 wr_status wr_generate(wr_session *s, const wr_generate_params *p,
                       wr_generate_result *out);
 

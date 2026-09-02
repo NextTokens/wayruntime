@@ -6,12 +6,19 @@
 # the SPDX header owns line 1).
 #
 #   bash test/integration.sh [builddir]        default: build/posix
-#   MODELS_DIR=/path/to/models overrides the model directory
-#   (default: ../models next to the repository).
+#   WR_TEST_LLAMA=/path/to/model.gguf  the llama-family model the suite
+#       runs on (REQUIRED; default $MODELS_DIR/stories15M-q8_0.gguf,
+#       MODELS_DIR default ../models next to the repository).  Any small
+#       llama-architecture GGUF works; docs/TESTING.md lists the files
+#       the suite was validated with and where they come from.
+#   WR_TEST_Q4K / WR_TEST_Q5K / WR_TEST_Q6K  optional K-quant models for
+#       the extra load checks (default $MODELS_DIR/tiny-q?k-test.gguf);
+#       an absent optional file prints a SKIP line, never a silent pass.
 #
 # Real models, no mocks.  Layers:
-#   1. `wayrt verify` accepts every supported test model and refuses
-#      the unsupported-architecture model with exit 2.
+#   1. `wayrt verify` accepts the test model (and the optional K-quant
+#      files) and refuses a synthesized unsupported-architecture file
+#      with exit 2.
 #   2. HOSTILE-GGUF suite: eight structurally corrupt files generated
 #      on the fly; every one must be refused with exit 2 and must
 #      never crash.
@@ -23,6 +30,9 @@
 #      WR_ERR_CTX_FULL, logits view rules, sampler determinism, mask
 #      callback, and sampler statistics; its pass/fail counts fold
 #      into this suite's totals.
+#   5. Concurrency: eight threads decoding their own sessions of the
+#      one model, plus a batched step running alongside a single step,
+#      must reproduce the sequential logits byte for byte.
 #
 # Output: one numbered line per step, summary "N/N passed", exit
 # nonzero on any failure.
@@ -46,30 +56,33 @@ if [ ! -f "$LIB" ]; then
     exit 2
 fi
 
-TINY_Q4K="$MODELS_DIR/tiny-q4k-test.gguf"
-TINY_Q5K="$MODELS_DIR/tiny-q5k-test.gguf"
-TINY_Q6K="$MODELS_DIR/tiny-q6k-test.gguf"
-STORIES="$MODELS_DIR/stories15M-q8_0.gguf"
-GPT2="$MODELS_DIR/tiny-gpt2-f32.gguf"
-for m in "$TINY_Q4K" "$TINY_Q5K" "$TINY_Q6K" "$STORIES" "$GPT2"; do
-    if [ ! -f "$m" ]; then
-        echo "integration: test model missing: $m" >&2
-        echo "integration: set MODELS_DIR to the model directory" >&2
-        exit 2
-    fi
-done
+LLAMA="${WR_TEST_LLAMA:-$MODELS_DIR/stories15M-q8_0.gguf}"
+Q4K="${WR_TEST_Q4K:-$MODELS_DIR/tiny-q4k-test.gguf}"
+Q5K="${WR_TEST_Q5K:-$MODELS_DIR/tiny-q5k-test.gguf}"
+Q6K="${WR_TEST_Q6K:-$MODELS_DIR/tiny-q6k-test.gguf}"
+if [ ! -f "$LLAMA" ]; then
+    echo "integration: llama-family test model missing: $LLAMA" >&2
+    echo "integration: set WR_TEST_LLAMA=/path/to/model.gguf (any small" >&2
+    echo "integration: llama-architecture GGUF; docs/TESTING.md names the" >&2
+    echo "integration: validated files and their provenance)" >&2
+    exit 2
+fi
 
 T="$(mktemp -d /tmp/wayrt-int-XXXXXX)"
 trap 'rm -rf "$T"' EXIT
 
 PASS=0
 FAIL=0
+SKIP=0
 STEP=0
 DESC=""
 
 say()  { printf '%s\n' "$*"; }
 step() { STEP=$((STEP+1)); DESC="$1"; }
 ok()   { PASS=$((PASS+1)); printf '%2d. ok   %s\n' "$STEP" "$DESC"; }
+# Optional-input steps only: an absent optional model is reported, never
+# counted as a pass.
+skip() { SKIP=$((SKIP+1)); printf '%2d. SKIP %s [%s]\n' "$STEP" "$DESC" "$1"; }
 bad()  {
     FAIL=$((FAIL+1))
     printf '%2d. FAIL %s%s\n' "$STEP" "$DESC" "${1:+ [$1]}"
@@ -81,11 +94,20 @@ RC=0
 run() { "$@" >"$T/out" 2>"$T/err"; RC=$?; }
 
 # ------------------------------------------------------------------
-# 1. verify: every supported test model loads; arch line present
+# 1. verify: the test model loads (arch line present); the optional
+#    K-quant files exercise the Q4_K / Q5_K / Q6_K load paths.
 # ------------------------------------------------------------------
 
-for m in "$TINY_Q4K" "$TINY_Q5K" "$TINY_Q6K" "$STORIES"; do
-    step "verify $(basename "$m") (exit 0, arch line)"
+step "verify $(basename "$LLAMA") (exit 0, arch line)"
+run "$WAYRT" verify "$LLAMA"
+if [ "$RC" -ne 0 ]; then bad "exit $RC, wanted 0"
+elif ! grep -q '^arch:' "$T/out"; then bad "no arch line"
+else ok; fi
+
+for kq in "Q4_K:$Q4K" "Q5_K:$Q5K" "Q6_K:$Q6K"; do
+    kind="${kq%%:*}"; m="${kq#*:}"
+    step "verify optional $kind model $(basename "$m") (exit 0, arch line)"
+    if [ ! -f "$m" ]; then skip "optional model not present"; continue; fi
     run "$WAYRT" verify "$m"
     if [ "$RC" -ne 0 ]; then bad "exit $RC, wanted 0"
     elif ! grep -q '^arch:' "$T/out"; then bad "no arch line"
@@ -93,7 +115,7 @@ for m in "$TINY_Q4K" "$TINY_Q5K" "$TINY_Q6K" "$STORIES"; do
 done
 
 step "default model load maps read-only or reports streamed fallback"
-run "$WAYRT" verify "$TINY_Q4K"
+run "$WAYRT" verify "$LLAMA"
 cp "$T/out" "$T/verify-mmap"
 if [ "$RC" -ne 0 ]; then bad "exit $RC"
 elif grep -q 'loader: .* mmap$' "$T/err"; then ok
@@ -101,7 +123,7 @@ elif grep -q 'loader: mapping .* failed .* streaming instead' "$T/err"; then ok
 else bad "loader reported neither mmap success nor streamed fallback"; fi
 
 step "--no-mmap streams weights with identical model metadata"
-run "$WAYRT" verify --no-mmap "$TINY_Q4K"
+run "$WAYRT" verify --no-mmap "$LLAMA"
 if [ "$RC" -ne 0 ]; then bad "exit $RC"
 elif grep -q 'loader: .* mmap$' "$T/err"; then
     bad "loader still reported mmap"
@@ -112,14 +134,9 @@ elif ! cmp -s "$T/verify-mmap" "$T/out"; then
 else ok; fi
 
 # ------------------------------------------------------------------
-# 2. refusals: wrong architecture, missing file, garbage file
+# 2. refusals: missing file, garbage file (the unsupported-architecture
+#    refusal follows the generator in section 3)
 # ------------------------------------------------------------------
-
-step "tiny-gpt2-f32 refused (exit exactly 2, stderr names the arch)"
-run "$WAYRT" verify "$GPT2"
-if [ "$RC" -ne 2 ]; then bad "exit $RC, wanted 2"
-elif ! grep -q 'gpt2' "$T/err"; then bad "stderr does not name gpt2"
-else ok; fi
 
 step "nonexistent file refused (exit 2)"
 run "$WAYRT" verify "$T/does-not-exist.gguf"
@@ -194,6 +211,11 @@ write("h7-huge-string.gguf",
 # 8: tensor count 100000 (over the compiled hard limit)
 write("h8-tensor-count.gguf",
       MAGIC + u32(3) + u64(100000) + u64(0) + b"\0" * 64)
+# well-formed but unsupported architecture: one F32 tensor inside the
+# file so every structural check passes and only the arch gate trips
+write("unsupported-arch.gguf",
+      header(3, 1, [kv_str("general.architecture", "gpt2")])
+      + tensor("t0", [16], 0, 0) + b"\0" * 128)
 PYEOF
 if [ $? -ne 0 ]; then
     echo "integration: hostile-GGUF generator failed (python3 required)" >&2
@@ -219,18 +241,24 @@ do
     else ok; fi
 done
 
+step "unsupported architecture refused (exit exactly 2, stderr names gpt2)"
+run "$WAYRT" verify "$T/unsupported-arch.gguf"
+if [ "$RC" -ne 2 ]; then bad "exit $RC, wanted 2"
+elif ! grep -q 'gpt2' "$T/err"; then bad "stderr does not name gpt2"
+else ok; fi
+
 # ------------------------------------------------------------------
-# 4. generation invariants on stories15M
+# 4. generation invariants on the test model
 # ------------------------------------------------------------------
 
 PROMPT="Once upon a time"
 
 step "generate --raw --greedy deterministic (2 runs byte-identical)"
 run "$WAYRT" generate --raw --greedy --max-tokens 24 \
-    --prompt "$PROMPT" "$STORIES"
+    --prompt "$PROMPT" "$LLAMA"
 cp "$T/out" "$T/g1"; RC1=$RC
 run "$WAYRT" generate --raw --greedy --max-tokens 24 \
-    --prompt "$PROMPT" "$STORIES"
+    --prompt "$PROMPT" "$LLAMA"
 if [ "$RC1" -ne 0 ] || [ "$RC" -ne 0 ]; then bad "exit $RC1/$RC"
 elif [ ! -s "$T/g1" ]; then bad "empty generation"
 elif ! cmp -s "$T/g1" "$T/out"; then bad "outputs differ"
@@ -238,10 +266,10 @@ else ok; fi
 
 step "--seed 42 reproducible at --temp 0.8 (2 runs identical)"
 run "$WAYRT" generate --raw --temp 0.8 --seed 42 --max-tokens 16 \
-    --prompt "$PROMPT" "$STORIES"
+    --prompt "$PROMPT" "$LLAMA"
 cp "$T/out" "$T/s42"; RC1=$RC
 run "$WAYRT" generate --raw --temp 0.8 --seed 42 --max-tokens 16 \
-    --prompt "$PROMPT" "$STORIES"
+    --prompt "$PROMPT" "$LLAMA"
 if [ "$RC1" -ne 0 ] || [ "$RC" -ne 0 ]; then bad "exit $RC1/$RC"
 elif ! cmp -s "$T/s42" "$T/out"; then bad "same seed diverged"
 else ok; fi
@@ -252,14 +280,14 @@ else ok; fi
 # fires, re-run once; a repeat is a real sampler/RNG defect.
 step "--seed 43 differs from --seed 42 at --temp 0.8"
 run "$WAYRT" generate --raw --temp 0.8 --seed 43 --max-tokens 16 \
-    --prompt "$PROMPT" "$STORIES"
+    --prompt "$PROMPT" "$LLAMA"
 if [ "$RC" -ne 0 ]; then bad "exit $RC"
 elif cmp -s "$T/s42" "$T/out"; then bad "different seeds produced identical output"
 else ok; fi
 
 step "--max-tokens honored exactly (stderr reports 7 generated)"
 run "$WAYRT" generate --raw --greedy --max-tokens 7 \
-    --prompt "$PROMPT" "$STORIES"
+    --prompt "$PROMPT" "$LLAMA"
 NGEN="$(sed -n 's/.*[^0-9]\([0-9][0-9]*\) generated.*/\1/p' "$T/err")"
 if [ "$RC" -ne 0 ]; then bad "exit $RC"
 elif [ "$NGEN" != "7" ]; then bad "stderr reports '$NGEN' generated, wanted 7"
@@ -267,7 +295,7 @@ elif ! grep -q 'stop=max_tokens' "$T/err"; then bad "stop reason not max_tokens"
 else ok; fi
 
 step "bench --tokens 8 (exit 0, 12 counters, nonzero decode tok/s)"
-run "$WAYRT" bench --tokens 8 "$STORIES"
+run "$WAYRT" bench --tokens 8 "$LLAMA"
 NCTR="$(awk '/^counters:/{f=1;next} f && /^  /{n++} END{print n+0}' "$T/out")"
 TOKS="$(sed -n 's/^decode:.* \([0-9][0-9.]*\) tok\/s.*/\1/p' "$T/out")"
 if [ "$RC" -ne 0 ]; then bad "exit $RC"
@@ -278,7 +306,7 @@ else ok; fi
 
 step "--threads 1 matches default threads (greedy bit-exactness)"
 run "$WAYRT" --threads 1 generate --raw --greedy --max-tokens 24 \
-    --prompt "$PROMPT" "$STORIES"
+    --prompt "$PROMPT" "$LLAMA"
 if [ "$RC" -ne 0 ]; then bad "exit $RC"
 elif ! cmp -s "$T/g1" "$T/out"; then
     bad "REAL FINDING: thread-count changed greedy output — the parallel reduction order is leaking into the numerics; investigate the worker-pool split, do not delete this test"
@@ -286,14 +314,14 @@ else ok; fi
 
 step "--simd scalar matches --simd auto (greedy bit-exactness)"
 run "$WAYRT" --simd scalar generate --raw --greedy --max-tokens 24 \
-    --prompt "$PROMPT" "$STORIES"
+    --prompt "$PROMPT" "$LLAMA"
 if [ "$RC" -ne 0 ]; then bad "exit $RC"
 elif ! cmp -s "$T/g1" "$T/out"; then
     bad "REAL FINDING: scalar and SIMD kernels disagree on the F32/Q8_0 greedy path — numeric-path invariance is broken; investigate the kernel variants, do not delete this test"
 else ok; fi
 
-step "chat-template smoke: no template on stories15M, plain generate works"
-run "$WAYRT" generate --greedy --max-tokens 8 --prompt "$PROMPT" "$STORIES"
+step "chat-template smoke: template autodetect on the test model, generate works"
+run "$WAYRT" generate --greedy --max-tokens 8 --prompt "$PROMPT" "$LLAMA"
 if [ "$RC" -ne 0 ]; then bad "exit $RC"
 elif [ ! -s "$T/out" ]; then bad "empty output"
 else ok; fi
@@ -336,14 +364,20 @@ fold_harness() {  # fold_harness <label> <args...>
     fi
 }
 
-say "-- sdk harness on $(basename "$TINY_Q4K") --"
-fold_harness "sdk harness" sdk "$TINY_Q4K"
+say "-- sdk harness on $(basename "$LLAMA") --"
+fold_harness "sdk harness" sdk "$LLAMA"
 say "-- sampler statistics (synthetic logits) --"
 fold_harness "stats harness" stats
+say "-- concurrent sessions vs sequential reference (8 threads + batch) --"
+fold_harness "conc harness" conc "$LLAMA"
 
 # ------------------------------------------------------------------
 
 TOTAL=$((PASS + FAIL))
 say ""
-say "integration: $PASS/$TOTAL passed"
+if [ "$SKIP" -ne 0 ]; then
+    say "integration: $PASS/$TOTAL passed ($SKIP optional step(s) skipped: model not present)"
+else
+    say "integration: $PASS/$TOTAL passed"
+fi
 [ "$FAIL" -eq 0 ]

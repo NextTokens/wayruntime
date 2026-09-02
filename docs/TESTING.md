@@ -6,25 +6,29 @@ the repo and rerunnable; none of them requires the others.
 | layer | entry point | needs | proves |
 |---|---|---|---|
 | 1. Unit + golden | `make unit` | nothing | the numeric primitives are correct |
-| 2. Integration | `make integration` | tiny test models, offline | the library and CLI wire them together |
+| 2. Integration | `make integration` | one small llama-family GGUF, offline | the library and CLI wire them together |
 | 3. Real model | `make realtest MODEL_GGUF=...` | a real GGUF | the shipped path works end to end |
 | 4. Differential | `test/realtest_diff.sh` | a llama.cpp server + the same GGUF | decode agrees with the reference, token for token |
 | 5. Windows native | `test\realtest.ps1` | both builds + WSL | the same product on Windows, byte-identical output |
 
-`make test` is the full local gate: `license-check` (SPDX/REUSE
-boundary, `test/check_license_metadata.py`) + `check-api` (the public
-header must compile freestanding under `-std=c11 -pedantic -Werror`
-with no `src/` include path) + `unit` + `integration`.
+`make test` is the offline gate and runs from a bare clone with no
+model files: `license-check` (SPDX/REUSE boundary,
+`test/check_license_metadata.py`) + `check-api` (the public header
+must compile freestanding under `-std=c11 -pedantic -Werror` with no
+`src/` include path) + `unit`.  `make check` runs all of that plus
+`integration`, which needs the one small model described in layer 2.
 
 Performance measurement is deliberately separate from these correctness
 gates. `make benchmark` is the repeatable local baseline described below;
 it never runs as part of `make test`.
 
-Current standing (2026-08-30): 57/57 unit checks; 71/71 integration
-(CLI + hostile-GGUF + SDK harness + sampler statistics); real-model
+Current standing (2026-09-01): 57/57 unit checks; 77/77 integration
+(CLI + hostile-GGUF + SDK harness + sampler statistics + concurrent
+sessions vs sequential); real-model
 realtest PASS; differential vs llama.cpp on Qwen3-0.6B Q4_K_M:
-tokenizer corpus 20/20 exact and 20/20 teacher-forced argmax
-agreement (a 78-string corpus scored 78/78 during development);
+tokenizer corpus 20/20 exact, the compiled-in 78-string fixture corpus
+78/78 exact (re-proven on every run), and 20/20 teacher-forced argmax
+agreement;
 Windows-native battery 7/7 including byte-identical greedy output
 Linux vs Windows.
 
@@ -67,10 +71,25 @@ wrong-architecture GGUF and unsupported dtypes must fail with the
 documented errors, not run). It also observes the default mapping attempt
 (successful mapping or the documented streamed fallback) and proves that
 `--no-mmap` produces identical model metadata without attempting a mapping.
+Its concurrency gate drives eight threads of sessions on the one model
+(plus a batched step alongside a single step) and requires every
+step's logits to be byte-identical to the sequential run.
 See `test/integration.sh` for the current check list.
 
-This layer needs no real model and no network; `make test` includes it
-as the full local/CI gate.
+This layer needs no network and exactly one small real model, named
+by `WR_TEST_LLAMA` (default `../models/stories15M-q8_0.gguf`, or set
+`MODELS_DIR`).  Any llama-architecture GGUF works.  The suite was
+validated with **stories15M**: the 15M-parameter TinyStories
+checkpoint published by the llama2.c project, converted with
+llama.cpp's `convert-llama2c-to-ggml` tool and quantized to Q8_0 with
+`llama-quantize`.  Three optional 1-layer K-quant files
+(`WR_TEST_Q4K` / `WR_TEST_Q5K` / `WR_TEST_Q6K`, defaults
+`../models/tiny-q{4,5,6}k-test.gguf`) additionally exercise the
+Q4_K / Q5_K / Q6_K load paths; when one is absent the script prints a
+SKIP line for that step rather than counting it.  The
+unsupported-architecture refusal case and the eight hostile GGUFs are
+synthesized by the script itself.  `make check` = `make test` + this
+layer.
 
 ## 3. Real-model end-to-end
 
@@ -97,7 +116,11 @@ bash test/realtest_diff.sh
 The strongest correctness claim in the repo: wayruntime and llama.cpp
 load the **same GGUF** and must agree on teacher-forced argmax,
 token for token, and on tokenization over a text corpus. The recorded
-run on Qwen3-0.6B Q4_K_M agrees 20/20 on forced-decode argmax.
+run on Qwen3-0.6B Q4_K_M agrees 20/20 on forced-decode argmax.  The
+compiled-in 78-string tokenizer fixture corpus
+(`test/tokenizer_fixtures.h`: whitespace runs, code, CJK, contractions,
+control markers with the parse-special flag) is replayed against the
+reference on every run and must match exactly.
 
 The checked-in acceptance bars are 19/20 exact tokenizer sequences and
 20/20 teacher-forced argmax agreement. The direct script and Make target
@@ -120,9 +143,11 @@ The reference side is a stock `llama-server` (endpoints `/health`,
 ```
 
 Point the script at that server and the matching GGUF path; see the
-header of `test/realtest_diff.sh` for its parameters. Residual
-tokenizer divergences on exotic whitespace are documented in code and
-tracked against the corpus this layer runs.
+header of `test/realtest_diff.sh` for its parameters. The byte-level
+pretokenizer classifies Unicode with compact range tables rather than
+the full Unicode database, so scripts outside those tables could split
+at different boundaries than the reference; every script in the
+fixture corpus matches, and any new divergence surfaces here first.
 
 ## 5. Windows native
 

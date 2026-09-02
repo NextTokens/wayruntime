@@ -35,6 +35,12 @@
  */
 #include <wayruntime/wayruntime.h>
 
+/* The differential corpus (test/tokenizer_fixtures.h) is compiled in so
+ * the `tokfix` mode below can replay every fixture, real newlines and
+ * control bytes included, against the reference tokenizer. */
+#include "tokenizer_fixtures.h"
+
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -147,10 +153,12 @@ static void rig_down(rig *r)
 /* ------------------------------------------------------------------ */
 
 /* Session continuation: two wr_generate calls on ONE session must
- * share the KV cache.  Position accounting is exact: a generate call
- * prefills n_prompt-1 ids, then performs one wr_step per generated
- * token, so pos advances by tokens_in + tokens_out - 1 for both the
- * MAX_TOKENS and the EOS stop (the final sampled token is never fed). */
+ * share the KV cache.  wr_generate retains every token the caller sees
+ * PLUS the stop marker when there is one: after a max_tokens stop the
+ * position advances by exactly tokens_in + tokens_out (the last text
+ * token is appended after sampling so the next call continues from the
+ * transcript the caller received); EOS stops count the EOS in
+ * tokens_out and retain it, template stops retain one extra id. */
 static void t_session_continuation(rig *r)
 {
     wr_session *s = NULL;
@@ -177,8 +185,8 @@ static void t_session_continuation(rig *r)
     check("continuation: first call produced text", r1.text != NULL);
     check("continuation: first call generated tokens", r1.tokens_out >= 1);
     uint32_t pos1 = wr_session_pos(s);
-    check("continuation: pos == in + out - 1 after first call",
-          pos1 == r1.tokens_in + r1.tokens_out - 1);
+    check("continuation: pos == in + out after first call (last token retained)",
+          pos1 == r1.tokens_in + r1.tokens_out);
 
     gp.prompt = " and the little dog";
     st = wr_generate(s, &gp, &r2);
@@ -187,8 +195,8 @@ static void t_session_continuation(rig *r)
         uint32_t pos2 = wr_session_pos(s);
         check("continuation: second call advanced the shared KV",
               pos2 > pos1);
-        check("continuation: pos delta == in2 + out2 - 1",
-              pos2 - pos1 == r2.tokens_in + r2.tokens_out - 1);
+        check("continuation: pos delta == in2 + out2 (last token retained)",
+              pos2 - pos1 == r2.tokens_in + r2.tokens_out);
         wr_free(r2.text);
     }
     wr_free(r1.text);
@@ -709,6 +717,257 @@ static int mode_tok(const char *model_path)
 }
 
 /* ------------------------------------------------------------------ */
+/* conc mode — concurrent sessions versus a sequential reference      */
+/*                                                                    */
+/* The one property of the thread contract no other suite exercises:  */
+/* sessions of ONE model decoding on different threads must produce   */
+/* exactly what they produce alone.  Eight threads drive their own    */
+/* sessions (four prompts, two threads each) through prefill(n-1) and */
+/* a greedy wr_step chain, and every step's full logits vector is     */
+/* compared byte-for-byte with the sequential run of the same chain.  */
+/* Then wr_batch_step on two sessions runs concurrently with wr_step  */
+/* on a third, all three compared the same way.                        */
+/* ------------------------------------------------------------------ */
+
+#define CONC_PROMPTS 4
+#define CONC_STEPS   12
+#define CONC_THREADS 8
+#define CONC_MAX_IDS 64
+
+typedef struct {
+    rig            *r;
+    const uint32_t *ids;
+    uint32_t        n_ids;
+    const float    *ref;      /* CONC_STEPS * vocab reference logits */
+    uint32_t        vocab;
+    int             mismatches;
+    int             err;
+} conc_job;
+
+/* Prefill n-1, then CONC_STEPS greedy steps; copies each step's logits
+ * into out (CONC_STEPS * vocab floats).  Returns 0 on success. */
+static int conc_chain(rig *r, const uint32_t *ids, uint32_t n_ids,
+                      uint32_t vocab, float *out)
+{
+    wr_session *s = NULL;
+    if (wr_session_create(r->model, NULL, &s) != WR_OK)
+        return -1;
+    if (n_ids > 1 && wr_prefill(s, ids, n_ids - 1) != (int)(n_ids - 1)) {
+        wr_session_destroy(s);
+        return -1;
+    }
+    uint32_t cur = ids[n_ids - 1];
+    for (int k = 0; k < CONC_STEPS; k++) {
+        const float *lg = wr_step(s, cur);
+        if (!lg) {
+            wr_session_destroy(s);
+            return -1;
+        }
+        memcpy(out + (size_t)k * vocab, lg, sizeof(float) * vocab);
+        cur = argmax_f32(lg, vocab);
+    }
+    wr_session_destroy(s);
+    return 0;
+}
+
+static int conc_compare(const float *a, const float *b, uint32_t vocab)
+{
+    int bad = 0;
+    for (int k = 0; k < CONC_STEPS; k++)
+        if (memcmp(a + (size_t)k * vocab, b + (size_t)k * vocab,
+                   sizeof(float) * vocab) != 0)
+            bad++;
+    return bad;
+}
+
+static void *conc_thread(void *arg)
+{
+    conc_job *j = (conc_job *)arg;
+    float *mine = (float *)malloc(sizeof(float) * CONC_STEPS * j->vocab);
+    if (!mine) {
+        j->err = 1;
+        return NULL;
+    }
+    if (conc_chain(j->r, j->ids, j->n_ids, j->vocab, mine) != 0)
+        j->err = 1;
+    else
+        j->mismatches = conc_compare(mine, j->ref, j->vocab);
+    free(mine);
+    return NULL;
+}
+
+static int mode_conc(const char *model_path)
+{
+    rig r;
+    if (rig_up(&r, model_path) != 0) {
+        rig_down(&r);
+        return 3;
+    }
+    const uint32_t vocab = r.info.vocab_size;
+    static const char *const prompts[CONC_PROMPTS] = {
+        "Once upon a time",
+        "The little dog",
+        "In the morning the",
+        "She looked at the",
+    };
+    uint32_t ids[CONC_PROMPTS][CONC_MAX_IDS];
+    uint32_t n[CONC_PROMPTS];
+    float   *ref[CONC_PROMPTS] = { NULL, NULL, NULL, NULL };
+    int ok = 1;
+
+    for (int p = 0; p < CONC_PROMPTS; p++) {
+        int k = wr_tokenize(r.tok, prompts[p], ids[p], CONC_MAX_IDS);
+        if (k <= 0) ok = 0;
+        n[p] = k > 0 ? (uint32_t)k : 0;
+    }
+    check("conc: prompts tokenized", ok);
+
+    for (int p = 0; ok && p < CONC_PROMPTS; p++) {
+        ref[p] = (float *)malloc(sizeof(float) * CONC_STEPS * vocab);
+        if (!ref[p] || conc_chain(&r, ids[p], n[p], vocab, ref[p]) != 0)
+            ok = 0;
+    }
+    check("conc: sequential references computed", ok);
+
+    if (ok) {
+        pthread_t th[CONC_THREADS];
+        conc_job  jobs[CONC_THREADS];
+        int started = 0;
+        for (int t = 0; t < CONC_THREADS; t++) {
+            int p = t % CONC_PROMPTS;
+            jobs[t].r = &r;
+            jobs[t].ids = ids[p];
+            jobs[t].n_ids = n[p];
+            jobs[t].ref = ref[p];
+            jobs[t].vocab = vocab;
+            jobs[t].mismatches = 0;
+            jobs[t].err = 0;
+            if (pthread_create(&th[t], NULL, conc_thread, &jobs[t]) != 0)
+                break;
+            started++;
+        }
+        int errs = (started != CONC_THREADS), mism = 0;
+        for (int t = 0; t < started; t++) {
+            pthread_join(th[t], NULL);
+            errs += jobs[t].err;
+            mism += jobs[t].mismatches;
+        }
+        check("conc: 8 concurrent sessions ran without error", errs == 0);
+        check("conc: every concurrent step's logits byte-identical to sequential",
+              errs == 0 && mism == 0);
+        if (mism)
+            printf("      # %d of %d concurrent steps differed from the "
+                   "sequential reference\n", mism, CONC_THREADS * CONC_STEPS);
+
+        /* batch_step on sessions A,B concurrently with wr_step on C */
+        conc_job side;
+        side.r = &r; side.ids = ids[2]; side.n_ids = n[2]; side.ref = ref[2];
+        side.vocab = vocab; side.mismatches = 0; side.err = 0;
+        pthread_t st;
+        int side_started = (pthread_create(&st, NULL, conc_thread, &side) == 0);
+
+        wr_session *ab[2] = { NULL, NULL };
+        int bok = 1;
+        for (int i = 0; i < 2 && bok; i++) {
+            if (wr_session_create(r.model, NULL, &ab[i]) != WR_OK) bok = 0;
+            else if (n[i] > 1 &&
+                     wr_prefill(ab[i], ids[i], n[i] - 1) != (int)(n[i] - 1))
+                bok = 0;
+        }
+        int bmism = 0;
+        if (bok) {
+            uint32_t cur[2] = { ids[0][n[0] - 1], ids[1][n[1] - 1] };
+            for (int k = 0; k < CONC_STEPS && bok; k++) {
+                const float *lo[2] = { NULL, NULL };
+                if (wr_batch_step(ab, cur, 2, lo) != 2) { bok = 0; break; }
+                for (int i = 0; i < 2; i++) {
+                    if (memcmp(lo[i], ref[i] + (size_t)k * vocab,
+                               sizeof(float) * vocab) != 0)
+                        bmism++;
+                    cur[i] = argmax_f32(lo[i], vocab);
+                }
+            }
+        }
+        for (int i = 0; i < 2; i++)
+            if (ab[i]) wr_session_destroy(ab[i]);
+        if (side_started) pthread_join(st, NULL);
+        check("conc: batch_step(A,B) ran alongside a stepping third session",
+              bok && side_started && side.err == 0);
+        check("conc: batched logits byte-identical to sequential under concurrency",
+              bok && bmism == 0 && side.mismatches == 0);
+    }
+
+    for (int p = 0; p < CONC_PROMPTS; p++)
+        free(ref[p]);
+    rig_down(&r);
+    return finish("conc");
+}
+
+/* ------------------------------------------------------------------ */
+/* tokfix mode — the compiled-in fixture corpus                       */
+/*                                                                    */
+/* One line per fixture: <flags>\t<JSON string>\t<comma ids>.  The     */
+/* text is JSON-escaped so strings carrying real newlines, tabs and   */
+/* control bytes survive a line-oriented pipe; the caller decodes it  */
+/* and POSTs the exact same bytes to the reference /tokenize.         */
+/* ------------------------------------------------------------------ */
+
+static void print_json_string(const char *s)
+{
+    putchar('"');
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        unsigned char c = *p;
+        if (c == '"' || c == '\\') {
+            putchar('\\');
+            putchar((int)c);
+        } else if (c < 0x20 || c == 0x7f) {
+            printf("\\u%04x", (unsigned)c);
+        } else {
+            putchar((int)c);
+        }
+    }
+    putchar('"');
+}
+
+static int mode_tokfix(const char *model_path)
+{
+    rig r;
+    if (rig_up(&r, model_path) != 0) {
+        rig_down(&r);
+        return 3;
+    }
+
+    static uint32_t ids[16384];
+    int rc = 0;
+
+    for (int set = 0; set < 2; set++) {
+        const char *const *arr = set ? wr_tok_fixture_special
+                                     : wr_tok_fixture_plain;
+        int      count = set ? WR_TOK_FIXTURE_SPECIAL_COUNT
+                             : WR_TOK_FIXTURE_PLAIN_COUNT;
+        uint32_t flags = set ? WR_TOK_PARSE_SPECIAL : 0u;
+        for (int i = 0; i < count; i++) {
+            int n = wr_tokenize_ex(r.tok, arr[i], ids,
+                                   (int)(sizeof ids / sizeof ids[0]), flags);
+            printf("%u\t", (unsigned)flags);
+            print_json_string(arr[i]);
+            putchar('\t');
+            if (n < 0) {
+                printf("ERR %d", n);
+                rc = 3;
+            } else {
+                for (int j = 0; j < n; j++)
+                    printf(j ? ",%u" : "%u", (unsigned)ids[j]);
+            }
+            putchar('\n');
+        }
+    }
+    fflush(stdout);
+    rig_down(&r);
+    return rc;
+}
+
+/* ------------------------------------------------------------------ */
 /* tf mode — teacher-forced argmax agreement                          */
 /* ------------------------------------------------------------------ */
 
@@ -800,6 +1059,10 @@ int main(int argc, char **argv)
         return mode_stats();
     if (argc >= 3 && strcmp(argv[1], "tok") == 0)
         return mode_tok(argv[2]);
+    if (argc >= 3 && strcmp(argv[1], "tokfix") == 0)
+        return mode_tokfix(argv[2]);
+    if (argc >= 3 && strcmp(argv[1], "conc") == 0)
+        return mode_conc(argv[2]);
     if (argc >= 5 && strcmp(argv[1], "tf") == 0)
         return mode_tf(argv[2], argv[3], argv[4]);
 

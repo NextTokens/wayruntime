@@ -70,7 +70,8 @@ zero third-party code and zero network code in the tree.
 ## Quick start
 
 ```sh
-make && make test          # needs gcc, make, python3; zero warnings
+make && make test          # offline gate: gcc, make, python3; zero warnings
+make check                 # + integration suite; needs one small GGUF (docs/TESTING.md)
 ./build/posix/wayrt verify  model.gguf     # load, print metadata, unload
 ./build/posix/wayrt generate --prompt "The capital of France is" model.gguf
 ./build/posix/wayrt chat    model.gguf     # interactive, streaming
@@ -137,7 +138,8 @@ what it proves):
 - zero-warning C11 build on gcc and mingw-w64
   (`-Wall -Wextra -Wshadow -Wvla`)
 - 57/57 unit checks, including 10 golden numeric self-tests, plus a
-  71-check integration battery (hostile-GGUF refusals included)
+  77-check integration battery (hostile-GGUF refusals and a
+  concurrent-sessions-vs-sequential gate included)
 - greedy decode verified 20/20 teacher-forced argmax agreement with
   llama.cpp on the same GGUF (Qwen3-0.6B)
 - tokenization verified against llama.cpp's tokenizer on the same

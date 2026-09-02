@@ -18,7 +18,7 @@ The following are BUSL-1.1:
   loader, tokenizer, model graph, sessions, batched decode, sampler,
   generate facade
 - `src/platform/**` and `src/cli/**`
-- the C test sources that include internal headers
+- the one test source that includes internal headers
   (`test/unit_tests.c`)
 - core-specific documentation mapped as BUSL-1.1 in `REUSE.toml`
 
@@ -44,8 +44,10 @@ The following are Apache-2.0:
 - `include/wayruntime/**` — the complete public C API
 - `examples/**`
 - the root `Makefile`
-- the standalone test scripts and gates (`test/check_api.c`,
-  `test/check_license_metadata.py`, `test/realtest.sh`)
+- every other file under `test/`: the shell/PowerShell suites, the
+  license and API gates, the SDK-only C harnesses
+  (`test/sdk_gen.c`), and the tokenizer fixture corpus
+  (`test/tokenizer_fixtures.h`)
 - project documentation and metadata mapped as Apache-2.0 in
   `REUSE.toml`
 

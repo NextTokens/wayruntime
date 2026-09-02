@@ -174,7 +174,8 @@ int wri_batch_decode_step(wr_session *const *sessions, const uint32_t *tokens,
             wri_session_kv_rollback(sessions[i]);
     }
 
-    for (uint32_t i = 0; i < n; i++) sessions[i]->last_status = st;
+    for (uint32_t i = 0; i < n; i++)
+        __atomic_store_n(&sessions[i]->last_status, st, __ATOMIC_RELEASE);
     for (uint32_t i = n; i > 0; i--) wr_mutex_unlock(locked[i - 1]->lock);
 
     return (st == WR_OK) ? (int)n : (int)st;

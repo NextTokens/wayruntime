@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BUSL-1.1 */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* SPDX-FileCopyrightText: 2026 WayOS Project */
 /*
  * tokenizer_fixtures.h — compiled-in tokenizer differential-test corpus.

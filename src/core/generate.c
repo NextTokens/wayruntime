@@ -183,7 +183,8 @@ static int wri_apply_chat_template(const wr_tokenizer *tok,
      * explicit thinking-mode choice anywhere in the prompt. */
     const char *body = prompt;
     char *owned = NULL;
-    if (qwen3_chatml && strstr(prompt, "/no_think") == NULL) {
+    if (qwen3_chatml && strstr(prompt, "/no_think") == NULL &&
+        strstr(prompt, "/think") == NULL) {
         static const char suffix[] = " /no_think";
         size_t plen = strlen(prompt);
         owned = (char *)malloc(plen + sizeof(suffix));
@@ -337,6 +338,13 @@ wr_status wr_generate(wr_session *s, const wr_generate_params *p,
     uint32_t vocab = m->vocab_size;
     int32_t eos = wr_token_eos(tok);
     uint32_t cur = ids.v[n_prompt - 1];
+    /* Prompt tokens actually in the KV cache: the prefill batch now, plus
+     * the seed token once its step succeeds. */
+    uint32_t prompt_consumed = (n_prompt > 1) ? n_prompt - 1 : 0;
+    /* The last sampled token not yet fed to the session (>= 0 after a
+     * stop); it is appended after the loop so the retained context
+     * matches the transcript the caller receives. */
+    int32_t tail = -1;
     wri_u32vec text_ids = {NULL, 0, 0};  /* ids included in the text */
     uint32_t n_gen = 0;                  /* tokens generated (tokens_out) */
     int32_t stop_reason = WR_STOP_MAX_TOKENS;
@@ -353,6 +361,8 @@ wr_status wr_generate(wr_session *s, const wr_generate_params *p,
             err = (ss == WR_OK) ? WR_ERR_INTERNAL : ss;
             break;
         }
+        prompt_consumed = n_prompt;      /* the seed step consumed */
+        tail = -1;                       /* cur is now in the KV cache */
 
         int32_t next = p->sampler ? wr_sample(p->sampler, logits, vocab)
                                   : wri_sample_argmax(logits, vocab);
@@ -366,6 +376,7 @@ wr_status wr_generate(wr_session *s, const wr_generate_params *p,
          * reported as the template stop). */
         if (template_stop >= 0 && next == template_stop) {
             stop_reason = WR_STOP_TEMPLATE;
+            tail = next;
             break;
         }
         /* Model EOS or the caller's extra stop token: generated (so it
@@ -375,6 +386,7 @@ wr_status wr_generate(wr_session *s, const wr_generate_params *p,
             (p->stop_token > 0 && next == p->stop_token)) {
             n_gen++;
             stop_reason = WR_STOP_EOS;
+            tail = next;
             break;
         }
 
@@ -385,6 +397,7 @@ wr_status wr_generate(wr_session *s, const wr_generate_params *p,
         }
         n_gen++;
         cur = (uint32_t)next;
+        tail = next;
 
         if (p->on_token) {
             char piece[WRI_GEN_PIECE_BUF];
@@ -404,6 +417,23 @@ wr_status wr_generate(wr_session *s, const wr_generate_params *p,
         return err;
     }
 
+    /* ---- retain the final token ---------------------------------------- */
+    /* The last sampled token (final text token, model EOS, or the
+     * template close marker) has not been fed to the session yet.  Append
+     * it - without the LM-head projection - so the KV cache holds exactly
+     * the transcript the caller receives and a following wr_generate on
+     * this session continues the conversation correctly.  A full context
+     * is the one case where it cannot be retained. */
+    if (tail >= 0) {
+        uint32_t t = (uint32_t)tail;
+        int r = wr_prefill(s, &t, 1);
+        if (r < 0 && r != WR_ERR_CTX_FULL) {
+            wri_vec_free(&ids);
+            wri_vec_free(&text_ids);
+            return (wr_status)r;
+        }
+    }
+
     /* ---- one-pass detokenize ------------------------------------------- */
     /* Exact sizing first: the decode length is the sum of the per-token
      * piece lengths (piece and decode apply the same normalization), so
@@ -414,6 +444,15 @@ wr_status wr_generate(wr_session *s, const wr_generate_params *p,
         for (uint32_t i = 0; i < text_ids.n; i++) {
             int pl = wr_token_piece(tok, text_ids.v[i], piece,
                                     (int)sizeof(piece));
+            if (pl == WR_ERR_LIMIT) {
+                /* A vocab piece longer than the measuring buffer: refuse
+                 * rather than under-size the output and truncate. */
+                wri_log_msg(0, "generate: token %u piece exceeds %d bytes "
+                        "(WR_ERR_LIMIT)", text_ids.v[i], WRI_GEN_PIECE_BUF);
+                wri_vec_free(&ids);
+                wri_vec_free(&text_ids);
+                return WR_ERR_LIMIT;
+            }
             if (pl > 0) total += (uint64_t)pl;
         }
     }
@@ -443,7 +482,7 @@ wr_status wr_generate(wr_session *s, const wr_generate_params *p,
     text[written] = '\0';
 
     out->text = text;                    /* caller releases with wr_free */
-    out->tokens_in = n_prompt;
+    out->tokens_in = prompt_consumed;
     out->tokens_out = n_gen;
     out->stop_reason = stop_reason;
 

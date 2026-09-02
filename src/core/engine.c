@@ -130,6 +130,10 @@ wr_status wr_engine_create(const wr_engine_config *cfg, wr_engine **out)
     if (!wri_host_is_le())
         return WR_ERR_UNSUPPORTED;
 
+    /* Counters are engine-scoped in the public contract; the storage is
+     * process-global, so a new engine starts them from zero. */
+    wri_counters_reset();
+
     wr_engine *e = calloc(1, sizeof *e);
     if (e == NULL)
         return WR_ERR_NOMEM;
@@ -217,13 +221,22 @@ int wr_engine_set_simd(wr_engine *e, int force_scalar, int prefer_avx2)
     if (e != wri_g_engine)
         return WR_ERR_STATE;
 
+    /* Republishers are serialized against each other (a spin gate: the
+     * critical section is a handful of stores); decoders are NOT held
+     * up — kernels.c publishes each table entry with a release store and
+     * every op snapshots exactly one kernel per call, so an in-flight op
+     * finishes on the variant it started with.  Without the gate two
+     * concurrent callers could interleave their stores and leave the
+     * table half from each. */
+    static int gate = 0;
+    while (__atomic_exchange_n(&gate, 1, __ATOMIC_ACQUIRE))
+        wr_plat_pause();
     e->cfg.force_scalar = (force_scalar != 0);
     e->cfg.prefer_avx2  = (prefer_avx2 != 0);
-
-    /* kernels.c republishes the dispatch tables atomically; in-flight
-     * ops finish on the variant they snapshotted at call time. */
     wri_simd_init(force_scalar, prefer_avx2);
-    return wri_simd_matmul_variant();
+    int bound = wri_simd_matmul_variant();
+    __atomic_store_n(&gate, 0, __ATOMIC_RELEASE);
+    return bound;
 }
 
 wr_status wr_engine_counters(const wr_engine *e,

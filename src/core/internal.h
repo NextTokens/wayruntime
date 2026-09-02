@@ -219,6 +219,14 @@ typedef enum wr_op {
  * -------------------------------------------------------------------------- */
 
 extern uint64_t wri_g_counters[WR_COUNTER_COUNT];
+/* Zero every counter (engine create: counters are engine-scoped per the
+ * public contract, the storage is process-global). */
+void wri_counters_reset(void);
+
+/* Upper bound on n_layers * pl_emb_dim (Gemma per-layer-input width):
+ * keeps every 32-bit product of the pair exact.  Real models are in the
+ * low thousands. */
+#define WRI_PLE_WIDTH_MAX (1u << 24)
 
 #define WRI_CTR_ADD(slot, n) \
     __atomic_fetch_add(&wri_g_counters[(slot)], (uint64_t)(n), __ATOMIC_RELAXED)
@@ -389,7 +397,8 @@ struct wr_model {
     uint32_t max_context;         /* effective session bound              */
     float    rms_eps;             /* attention.layer_norm_rms_epsilon     */
     float    rope_freq_base;      /* global layers                        */
-    float    rope_freq_base_swa;  /* SWA layers (Gemma); 0 = rope_freq_base */
+    float    rope_freq_base_swa;  /* SWA layers (Gemma); loader fills 10000
+                                   * when the file has no value            */
     uint32_t n_rot_pairs;         /* partial-rotary pair count on global
                                    * layers; 0 = full rotary              */
     float    embed_scale;         /* embedding multiplied by this; 0 = off */
