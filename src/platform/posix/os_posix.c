@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BUSL-1.1 */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* SPDX-FileCopyrightText: 2026 WayOS Project */
 /*
  * os_posix.c — POSIX implementation of the platform shim (platform.h).

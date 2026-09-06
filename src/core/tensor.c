@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BUSL-1.1 */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* SPDX-FileCopyrightText: 2026 WayOS Project */
 /*
  * tensor.c — tensor descriptors, byte-plane access, views, and the

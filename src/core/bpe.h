@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BUSL-1.1 */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* SPDX-FileCopyrightText: 2026 WayOS Project */
 /*
  * bpe.h — BPE tokenizer (internal engine behind the public wr_tokenizer).

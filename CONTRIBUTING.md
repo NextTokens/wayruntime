@@ -6,39 +6,31 @@ provenance-auditable tree; the contribution bar is deliberately high.
 
 ## Accepted contribution scope
 
-External contributions are accepted only for Apache-2.0 files in the
-public API surface, examples, and project documentation listed in
-`LICENSING.md` and `REUSE.toml`.
+Contributions are accepted for the whole repository — the public
+header, the runtime core, the platform layers, the CLI, the examples,
+the tests, and the documentation. There are no off-limits paths.
 
-The project does not currently accept patches that add or modify
-BUSL-1.1 core code. A pull request that touches a BUSL file,
-introduces a new BUSL file, or combines an API-surface change with a
-core change will not be merged. Bug reports and factual reproduction
-steps are welcome, but do not paste substantial proposed core
-implementation code into an issue or pull request.
+The bar is evidence, not permission: read the engineering rules
+below before opening a pull request, because they are what a change
+is measured against.
 
-There is currently no CLA. This is deliberate: outside code is
-accepted only under Apache-2.0, while ownership of the commercially
-licensed BUSL core remains unfragmented. If core contributions are
-opened later, an inbound-rights policy will be published before the
-first contribution is accepted.
+There is no CLA. Outside code is accepted under Apache-2.0 with a DCO
+1.1 sign-off, and contributors retain copyright in their own
+contributions.
 
-## Apache-2.0 contributions and DCO
+## Contributions and DCO
 
-By intentionally submitting an allowed contribution for inclusion,
-you submit it under Apache License 2.0 and retain copyright in your
+By intentionally submitting a contribution for inclusion, you submit
+it under Apache License 2.0 and retain copyright in your
 contribution.
 
 Every commit in an external pull request must carry a **DCO 1.1
 sign-off**: `Signed-off-by: Full Name <email@example.com>`. The
 sign-off certifies the unmodified [Developer Certificate of
-Origin](DCO). Because the DCO refers to an open-source license, this
-process applies only to Apache-2.0 contributions and never to BUSL
-core code.
+Origin](DCO).
 
-New files must be placed in an approved Apache path, carry an
-Apache-2.0 SPDX identifier, and include appropriate SPDX copyright
-information. Contributors may not select BUSL-1.1 for a new file.
+New files must carry an Apache-2.0 SPDX identifier and appropriate
+SPDX copyright information; `make license-check` enforces both.
 
 **Third-party code:** do not import any without prior maintainer
 approval, a row in `THIRD-PARTY-NOTICES.md`, and the full license

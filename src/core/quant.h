@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BUSL-1.1 */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* SPDX-FileCopyrightText: 2026 WayOS Project */
 /*
  * quant.h — dtype sizing, float conversions, block dequantization and the

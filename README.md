@@ -1,13 +1,11 @@
 # wayruntime
 
-![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue)
-![API surface: Apache-2.0](https://img.shields.io/badge/API_surface-Apache--2.0-green)
-![Apache contributions: DCO 1.1](https://img.shields.io/badge/Apache_contributions-DCO_1.1-lightgrey)
+![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green)
+![Contributions: DCO 1.1](https://img.shields.io/badge/contributions-DCO_1.1-lightgrey)
 
-The public API surface is open source under Apache-2.0. The runtime
-core is source-available under BUSL-1.1 and becomes Apache-2.0 on
-2030-08-30. The whole repository is therefore not open source before
-that date.
+Open source under Apache-2.0 — the whole repository, core included.
+Use it in production, commercially, in closed-source software; no
+separate license to buy.
 
 **A self-contained CPU inference runtime for GGUF language models.**
 One static library, one public header, one CLI. It loads a GGUF file
@@ -191,30 +189,24 @@ open public issues for security reports.
 
 ## License
 
-This is a mixed-license repository. Embedded SPDX identifiers and
-[`REUSE.toml`](REUSE.toml) define the exact boundary; the complete
-explanation is in [`LICENSING.md`](LICENSING.md).
+Apache License 2.0 — every first-party file, core included. The
+public header, the runtime, the platform layers, the CLI, the
+examples, the tests, and the docs are all Apache-2.0. Embedded SPDX
+identifiers and [`REUSE.toml`](REUSE.toml) are authoritative per
+file; [`LICENSING.md`](LICENSING.md) explains the whole picture.
 
-- **Core** (`src/`: engine, kernels, loader, tokenizer, sessions,
-  sampler, CLI): Business Source License 1.1. Non-production use and
-  the limited production uses in `LICENSE` are free. Other production
-  use needs a separate commercial license until the fixed Change
-  Date, 2030-08-30.
-- **API surface** (the public header, the examples, the Makefile,
-  and the repository's test scripts and metadata as mapped in
-  `REUSE.toml`): Apache-2.0. Code you write against the header is
-  yours under Apache-2.0; the library you link (`libwayruntime.a`)
-  is built from BUSL sources, so BUSL terms govern binaries that
-  contain the core until the Change Date.
+You may use wayruntime in production, commercially, and in
+closed-source software, subject to Apache-2.0's notice and
+attribution requirements. Linking `libwayruntime.a` carries no
+obligation beyond Apache-2.0's own terms. Attribution for
+redistributions is in [`NOTICE`](NOTICE).
 
-BUSL permits redistribution and restricts production use; it does
-not promise payment for every form of resale or support. See
-[`COMMERCIAL-LICENSING.md`](COMMERCIAL-LICENSING.md) for the
-commercial-production route.
+> Earlier releases carried a BUSL-1.1 core with an Apache-2.0 API
+> surface. The repository was relicensed in full to Apache-2.0 on
+> 2026-09-02; the Change Date and commercial-license route are gone.
 
-External code contributions are currently accepted only for the
-Apache-2.0 surface and require DCO 1.1 sign-off. The BUSL core does
-not accept outside code, and no CLA is currently required. See
+Contributions are accepted for the whole repository under Apache-2.0
+with DCO 1.1 sign-off, and no CLA. See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`DCO`](DCO). What the
 binaries link against is inventoried in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).

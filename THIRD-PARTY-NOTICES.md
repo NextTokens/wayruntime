@@ -26,8 +26,8 @@ Rules for keeping this true (mirrored in CONTRIBUTING.md):
 
 - Do not import third-party source without recording it here with
   its license, adding the full license text under `LICENSES/`, and
-  getting maintainer approval first — the BUSL-1.1 license on
-  first-party code cannot absorb copyleft or incompatible code.
+  getting maintainer approval first — Apache-2.0 first-party code
+  cannot absorb copyleft or otherwise incompatible code.
 - If a binary release ever bundles anything beyond the static
   library and CLI built from this tree, add the corresponding
   license texts to the release artifacts and update this table.

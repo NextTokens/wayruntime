@@ -1,80 +1,62 @@
 # wayruntime licensing
 
-wayruntime is a mixed-license repository. The public API surface is
-open source under Apache License 2.0. The runtime core is
-source-available under Business Source License 1.1 and is not open
-source before its Change Date.
+wayruntime is open source under the Apache License 2.0. Every
+first-party file in this repository — the public header, the runtime
+core, the platform layers, the CLI, the examples, the tests, and the
+documentation — is Apache-2.0. There is no separate core license, no
+production-use restriction, and no commercial license to buy.
 
 An embedded `SPDX-License-Identifier` is authoritative when present.
-`REUSE.toml` supplies or confirms licensing for files without an
-embedded identifier. If this guide conflicts with a license or SPDX
-metadata, the license and SPDX metadata control.
+`REUSE.toml` supplies licensing for files without an embedded
+identifier. If this guide conflicts with a license or SPDX metadata,
+the license and SPDX metadata control.
 
-## BUSL-1.1 core
+## What that means in practice
 
-The following are BUSL-1.1:
+- You may use wayruntime in production, commercially, and in
+  closed-source software, subject to Apache-2.0's notice and
+  attribution requirements.
+- Programs that link `libwayruntime.a` carry no license obligation
+  beyond Apache-2.0's own terms.
+- Apache-2.0 includes an express patent grant and a trademark
+  limitation; read `LICENSE` for the operative text.
 
-- `src/core/**` — engine, SIMD kernels, quantization codecs, GGUF
-  loader, tokenizer, model graph, sessions, batched decode, sampler,
-  generate facade
-- `src/platform/**` and `src/cli/**`
-- the one test source that includes internal headers
-  (`test/unit_tests.c`)
-- core-specific documentation mapped as BUSL-1.1 in `REUSE.toml`
+`LICENSE` is the verbatim Apache License 2.0. `NOTICE` carries the
+attribution notice that Apache-2.0 section 4(d) propagates to
+redistributions.
 
-BUSL always permits copying, modification, redistribution, derivative
-works, and non-production use. The Additional Use Grant in `LICENSE`
-also permits the specified limited production uses. Other production
-use requires a separate commercial license from WayOS Project until
-the Change Date.
+## The one exception
 
-The Change Date for wayruntime 0.1.0 is **2030-08-30**. On that date,
-or earlier if required by BUSL's fourth-anniversary rule, the covered
-0.1.0 core becomes available under Apache-2.0. Future versions must
-publish their own unambiguous version and Change Date.
+`DCO` is the Developer Certificate of Origin 1.1, © 2004, 2006 The
+Linux Foundation, reproduced verbatim under its own terms
+(`LICENSES/LicenseRef-DCO-1.1.txt`). It is a contributor
+certification, not a license covering wayruntime's code.
 
-BUSL restricts production use; it does not prohibit redistribution.
-Charging for copies or support does not, by itself, alter the rights
-BUSL grants or the restrictions imposed on production use.
+## Third-party code
 
-## Apache-2.0 API surface
-
-The following are Apache-2.0:
-
-- `include/wayruntime/**` — the complete public C API
-- `examples/**`
-- the root `Makefile`
-- every other file under `test/`: the shell/PowerShell suites, the
-  license and API gates, the SDK-only C harnesses
-  (`test/sdk_gen.c`), and the tokenizer fixture corpus
-  (`test/tokenizer_fixtures.h`)
-- project documentation and metadata mapped as Apache-2.0 in
-  `REUSE.toml`
-
-The public header is deliberately freestanding (`make check-api`
-enforces it): applications, bindings, and headers-only tooling can be
-written against `include/wayruntime/wayruntime.h` under Apache-2.0
-alone.
-
-Unlike a repository with a separable client SDK, the *implementation*
-behind that header is the BUSL core: `libwayruntime.a` and `wayrt`
-are built from BUSL-1.1 sources. Programs that link the library
-therefore contain BUSL-licensed code, and BUSL's production-use terms
-apply to them until the Change Date. The root Makefile's Apache
-license does not change the licenses of the files or programs it
-builds.
+None is vendored. The tree is 100% first-party C11; what the binaries
+link against is inventoried in `THIRD-PARTY-NOTICES.md`. New
+third-party imports require maintainer approval, an entry in that
+file, and the full license text under `LICENSES/` — see
+`CONTRIBUTING.md`.
 
 ## Contributions
 
-External contributions are currently accepted only for the
-Apache-2.0 surface, under Apache-2.0 with DCO 1.1 sign-off. Outside
-code is not accepted for the BUSL core. There is no CLA under this
-policy. See `CONTRIBUTING.md`.
+Contributions are accepted for the whole repository under Apache-2.0
+with DCO 1.1 sign-off. There is no CLA. See `CONTRIBUTING.md`.
 
-## Separate distributions by the Licensor
+## Previous licensing
+
+wayruntime 0.1.0 was first published with its core under Business
+Source License 1.1 and only its public API surface under Apache-2.0.
+The repository was relicensed in full to Apache-2.0 on 2026-09-02 by
+the copyright holder. The BUSL-1.1 terms, the Additional Use Grant,
+and the 2030-08-30 Change Date no longer apply to anything in this
+repository; Apache-2.0 grants strictly more, so no permission granted
+under the earlier terms is withdrawn.
+
+## Separate distributions by the copyright holder
 
 Owner-authored portions may also appear in other WayOS Project
-distributions under other terms, including GPL-3.0-or-later. A
-separate distribution does not change the terms of this repository.
-Only material for which WayOS Project holds sufficient rights is
-offered here under BUSL or under a separate commercial agreement.
+distributions under other terms. A separate distribution does not
+change the terms of this repository.
